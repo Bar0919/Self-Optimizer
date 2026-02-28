@@ -32,7 +32,7 @@ const safetySettings = [
 
 // JSONモードを有効にするための生成設定
 const generationConfig: GenerationConfig = {
-  response_mime_type: "application/json",
+  responseMimeType: "application/json",
 };
 
 
@@ -42,11 +42,34 @@ const generationConfig: GenerationConfig = {
  * @returns 生成されたWBSオブジェクト
  */
 export async function generateWbsFromKgi(kgi: string) {
-  const model = genAI.getGenerativeModel({ 
+  const model = genAI.getGenerativeModel({
     model: "gemini-1.5-flash-latest",
     safetySettings,
     generationConfig
   });
+
+  const jsonExample = {
+    "id": "wbs-root",
+    "name": "KGIの名称",
+    "children": [
+      {
+        "id": "kpi-1",
+        "name": "KPI（中間目標）1",
+        "children": [
+          {
+            "id": "task-1-1",
+            "name": "マイルストーンやタスク",
+            "children": [
+              {
+                "id": "todo-1-1-1",
+                "name": "具体的なToDo"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  };
 
   const prompt = `
 # 命令書
@@ -61,32 +84,6 @@ ${kgi}
 - WBSは最大5階層で構成してください。
 - 各項目は具体的かつ簡潔な名称にしてください。
 - 出力は必ず指定されたJSON形式に従ってください。他のテキストは一切含めないでください。
-
-## 出力JSON形式
-```json
-{
-  "id": "wbs-root",
-  "name": "KGIの名称",
-  "children": [
-    {
-      "id": "kpi-1",
-      "name": "KPI（中間目標）1",
-      "children": [
-        {
-          "id": "task-1-1",
-          "name": "マイルストーンやタスク",
-          "children": [
-            {
-              "id": "todo-1-1-1",
-              "name": "具体的なToDo"
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
 `;
   
   console.log("Generating WBS for KGI:", kgi);
