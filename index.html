@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ASMOS - Autonomous Self-Management OS</title>
+    <link rel="stylesheet" href="src/style.css">
+    <!-- Markmap CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.16.0"></script>
+    <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.16.0"></script>
+</head>
+<body>
+    <nav class="main-nav">
+        <button id="nav-dashboard" class="active">事実 (Fact)</button>
+        <button id="nav-timezone">実行 (Schedule)</button>
+        <button id="nav-mindmap">目的管理 (Goal)</button>
+        <button id="nav-reflection">内省とアクション (Review)</button>
+    </nav>
+    <div id="app"></div>
+    <!-- The compiled script will be here -->
+    <script src="dist/main.js"></script>
+</body>
+</html>
