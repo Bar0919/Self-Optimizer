@@ -30,8 +30,6 @@ const TIME_SLOTS: Record<string, TimeSlotConfig> = {
 interface TaskCost {
   estimated_time: number;
   actual_time: number;
-  hp_consumption: number;
-  actual_hp: number;
 }
 
 interface TaskQuality {
@@ -63,9 +61,31 @@ interface TaskEntity {
   note?: string;
 }
 
+interface IfThenPlan {
+  id: string;
+  condition: string;
+  action: string;
+  category: string;
+}
+
+interface MoodRecord {
+  timestamp: string;
+  value: number;
+  emoji: string;
+}
+
+interface ProjectEntity {
+  id: string;
+  title: string;
+  markdown: string;
+}
+
 interface AppState {
   tasks: TaskEntity[];
-  userHP: number;
+  ifThenPlans: IfThenPlan[];
+  moodHistory: MoodRecord[];
+  projects: ProjectEntity[];
+  selectedProjectId: string | null;
   mindMapMarkdown: string;
   memoGood: string;
   memoImprove: string;
@@ -86,12 +106,21 @@ class ASMOSStorage {
         const state = JSON.parse(data);
         if (!state.mindMapMarkdown) state.mindMapMarkdown = '# ASMOS Mind Map\n\n## 目的\n- 自己研鑽\n- 業務効率化\n\n## ステークホルダー\n- 家族\n- 同僚';
         if (state.memoAnalysisMarkdown === undefined) state.memoAnalysisMarkdown = '# 問題分析（ロジックツリー）\n\n## 今日の課題\n- なぜ起きた？\n  - 原因A\n  - 原因B';
+        if (state.ifThenPlans === undefined) state.ifThenPlans = [];
+        if (state.moodHistory === undefined) state.moodHistory = [{ timestamp: new Date().toISOString(), value: 100, emoji: '🤩' }];
         
+        // Project Migration
+        if (state.projects === undefined) {
+          state.projects = [{ id: 'default-project', title: 'メインプロジェクト', markdown: state.mindMapMarkdown || '# New Project' }];
+          state.selectedProjectId = 'default-project';
+        }
+        if (state.selectedProjectId === undefined) state.selectedProjectId = state.projects[0]?.id || null;
+
         state.tasks = state.tasks.map((t: any) => {
-          if (t.slot === 'STOCK') t.slot = 'STOCK_DAY';
           if (t.importance === undefined) t.importance = 'Mid';
           if (t.is_recovery === undefined) t.is_recovery = false;
           if (t.goal_label === undefined) t.goal_label = '';
+          if (t.cost && t.cost.actual_time === undefined) t.cost.actual_time = 0;
           return t;
         });
 
@@ -100,12 +129,16 @@ class ASMOSStorage {
         console.error('Failed to parse ASMOS state:', e);
       }
     }
+    const defaultMarkdown = '# Default Project\n\n## 目的\n- 自己研鑽\n- 業務効率化';
     return {
       tasks: [],
-      userHP: 100,
-      mindMapMarkdown: '# ASMOS Mind Map\n\n## 目的\n- 自己研鑽\n- 業務効率化\n\n## ステークホルダー\n- 家族\n- 同僚',
+      ifThenPlans: [],
+      moodHistory: [{ timestamp: new Date().toISOString(), value: 100, emoji: '🤩' }],
+      projects: [{ id: 'default-project', title: 'メインプロジェクト', markdown: defaultMarkdown }],
+      selectedProjectId: 'default-project',
+      mindMapMarkdown: defaultMarkdown,
       memoGood: '', memoImprove: '', 
-      memoAnalysisMarkdown: '# 問題分析（ロジックツリー）\n\n## 今日の課題\n- なぜ起きた？\n  - 原因A\n  - 原因B',
+      memoAnalysisMarkdown: '# 問題分析\n\n## 今日の課題\n- なぜ起きた？',
       memoNextActions: '', memoInsight: ''
     };
   }
@@ -140,11 +173,10 @@ class ASMOSApp {
   private state: AppState;
   private currentTaskIdForModal: string | null = null;
   private editingTaskId: string | null = null;
+  private editingIfThenId: string | null = null;
   private mmGoal: any = null;
   private mmAnalysis: any = null;
-  private selectedNode: any = null;
-  private creationMode: 'task' | 'node' = 'task';
-  private nodeEditMode: 'add' | 'edit' = 'add';
+  private creationMode: 'task' | 'ifthen' = 'task';
   private currentTargetSlot: TimeSlotID = 'STOCK_DAY';
   private currentTargetColumn: 'plan' | 'actual' | 'stock' = 'stock';
 
@@ -169,35 +201,25 @@ class ASMOSApp {
     if (!appDiv) return;
 
     appDiv.innerHTML = `
-      <!-- View 1: Integrated Dashboard (Fact) -->
+      <!-- View 1: Integrated Dashboard -->
       <div id="dashboard-view" class="app-view">
         <header class="view-header">
           <h1>📊 統合ダッシュボード</h1>
           <div class="hp-container standard-panel" style="padding: 10px 20px; display: flex; align-items: center; gap: 15px;">
-            <span class="hp-status">User HP: <span id="dash-hp-value">${this.state.userHP}</span>/100</span>
-            <div class="hp-bar-bg">
-              <div id="hp-bar-fill" style="width: ${this.state.userHP}%;"></div>
-            </div>
+            <span class="hp-status" id="current-mood-status">Status: ${this.state.moodHistory[this.state.moodHistory.length - 1]?.emoji || '🤩'}</span>
+            <span class="hp-status">Vitals Score: <span id="dash-hp-value">100</span></span>
           </div>
         </header>
         <div class="view-body">
           <div class="dashboard-container">
             <div class="summary-grid">
-              <div class="summary-card standard-panel">
-                <h3>📅 予定時間</h3>
-                <div class="value" id="dash-planned-time">0 min</div>
-                <div class="label">Total Planned Effort</div>
+              <div class="summary-card standard-panel" style="grid-column: 1 / -1; height: 250px;">
+                <h3>📈 Vital & Mood Trend</h3>
+                <div id="mood-chart-dash" style="width: 100%; height: 180px;"></div>
               </div>
-              <div class="summary-card success standard-panel">
-                <h3>⚡ 実行時間 (HP)</h3>
-                <div class="value" id="dash-actual-time">0 units</div>
-                <div class="label">Total Actual Consumption</div>
-              </div>
-              <div class="summary-card warning standard-panel">
-                <h3>📝 残タスク数</h3>
-                <div class="value" id="dash-remaining-tasks">0</div>
-                <div class="label">Unfinished Plans</div>
-              </div>
+              <div class="summary-card standard-panel"><h3>📅 予定時間</h3><div class="value" id="dash-planned-time">0 min</div><div class="label">Planned Effort (adj)</div></div>
+              <div class="summary-card success standard-panel"><h3>⚡ 実測時間</h3><div class="value" id="dash-actual-time">0 min</div><div class="label">Total Actual Consumption</div></div>
+              <div class="summary-card warning standard-panel"><h3>📝 残タスク数</h3><div class="value" id="dash-remaining-tasks">0</div><div class="label">Unfinished Plans</div></div>
             </div>
             <div class="dashboard-controls">
               <button id="export-btn-dash" class="btn">💾 データ一括出力 (JSON)</button>
@@ -210,155 +232,73 @@ class ASMOSApp {
 
       <!-- View 2: Goal Management -->
       <div id="mindmap-view" class="app-view" style="display:none">
-        <header class="view-header">
-          <h1>🎯 目的管理 (Goal Management)</h1>
-        </header>
+        <header class="view-header"><h1>🎯 目的管理 (Goal Management)</h1></header>
         <div class="view-body" style="padding: 0;">
           <div class="mindmap-container expanded">
+            <div class="project-sidebar">
+              <button id="add-project-btn" class="btn primary">+ 新規プロジェクト</button>
+              <div id="project-list" style="margin-top: 15px;"></div>
+            </div>
             <div class="mindmap-editor slim">
-              <div class="mm-editor-header">
-                <h3>✍️ エディタ</h3>
-                <div class="mm-controls">
-                  <button id="mm-download-btn" class="btn subtle">⬇️</button>
-                  <button id="mm-upload-btn" class="btn subtle">⬆️</button>
-                  <input type="file" id="mm-import-file" style="display:none" accept=".md">
-                </div>
-              </div>
-              <textarea id="mm-textarea" spellcheck="false">${this.state.mindMapMarkdown}</textarea>
+              <div class="mm-editor-header"><h3>✍️ エディタ</h3><div class="mm-controls"><button id="mm-download-btn" class="btn subtle">⬇️</button><button id="mm-upload-btn" class="btn subtle">⬆️</button><input type="file" id="mm-import-file" style="display:none" accept=".md"></div></div>
+              <textarea id="mm-textarea" spellcheck="false"></textarea>
             </div>
-            <div class="mindmap-visualizer full">
-              <svg id="markmap-svg-goal"></svg>
-              <div id="mm-node-actions" class="node-actions-menu" style="display:none">
-                <button id="mm-add-child" class="btn">➕</button>
-                <button id="mm-edit-node" class="btn">📝</button>
-                <button id="mm-delete-node" class="btn">🗑️</button>
-              </div>
-            </div>
+            <div class="mindmap-visualizer full"><svg id="markmap-svg-goal"></svg></div>
           </div>
         </div>
       </div>
 
-      <!-- View 3: Execution (Schedule) -->
+      <!-- View 3: If-Then Planning -->
+      <div id="ifthen-view" class="app-view" style="display:none">
+        <header class="view-header"><h1>💡 if-thenプランニング</h1><div class="controls"><button id="add-ifthen-btn" class="btn primary">+ 新規プラン追加</button></div></header>
+        <div class="view-body"><div class="dashboard-container"><div id="ifthen-list"></div></div></div>
+      </div>
+
+      <!-- View 4: Execution -->
       <div id="timezone-view" class="app-view" style="display:none">
         <div class="timezone-layout">
           <aside class="stock-sidebar hierarchical">
-            <div class="sidebar-header main">
-              <h3>📦 タスク・ストック</h3>
-            </div>
-            <section class="stock-level month">
-              <div class="level-header"><span>🗓️ 月間 (Month)</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_MONTH', 'stock')">+</button></div>
-              <div id="tasks-stock-month" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_MONTH" data-column="stock"></div>
-            </section>
-            <section class="stock-level week">
-              <div class="level-header"><span>📅 週間 (Week)</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_WEEK', 'stock')">+</button></div>
-              <div id="tasks-stock-week" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_WEEK" data-column="stock"></div>
-            </section>
-            <section class="stock-level day today">
-              <div class="level-header"><span>🚀 本日 (Day)</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_DAY', 'stock')">+</button></div>
-              <div id="tasks-stock-day" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_DAY" data-column="stock"></div>
-            </section>
+            <div class="sidebar-header main"><h3>📦 タスク・ストック</h3></div>
+            <section class="stock-level month"><div class="level-header"><span>🗓️ 月間</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_MONTH', 'stock')">+</button></div><div id="tasks-stock-month" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_MONTH" data-column="stock"></div></section>
+            <section class="stock-level week"><div class="level-header"><span>📅 週間</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_WEEK', 'stock')">+</button></div><div id="tasks-stock-week" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_WEEK" data-column="stock"></div></section>
+            <section class="stock-level day today"><div class="level-header"><span>🚀 本日</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_DAY', 'stock')">+</button></div><div id="tasks-stock-day" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_DAY" data-column="stock"></div></section>
           </aside>
-
           <main class="timeline-main">
-            <header class="view-header">
-              <h1>⏳ 実行管理</h1>
-              <div class="controls">
-                <button id="add-task-btn" class="btn primary">+ 新規タスク</button>
-              </div>
-            </header>
+            <header class="view-header"><h1>⏳ 実行管理</h1><div class="controls"><button id="auto-schedule-btn" class="btn warning">⚡ 自動スケジューリング</button><button id="add-task-btn" class="btn primary">+ 新規タスク</button></div></header>
             <div class="view-body" style="padding: 0; position: relative;">
               <div id="time-indicator"><span>NOW</span></div>
               <div class="time-slots-container">
-                <div class="timeline-headers">
-                  <div class="header-time">時間枠</div>
-                  <div class="header-plan">🗓️ 計画 (Plan)</div>
-                  <div class="header-actual">✅ 実行 (Actual)</div>
-                </div>
-                ${Object.keys(TIME_SLOTS).map(slotId => `
-                  <div class="time-slot" id="slot-${slotId}">
-                    <div class="slot-header">
-                      <span class="slot-id">${slotId}</span>
-                      <span class="slot-name">${TIME_SLOTS[slotId].name}</span>
-                      <span class="slot-time">${TIME_SLOTS[slotId].timeRange}</span>
-                    </div>
-                    <div class="slot-column plan" id="tasks-plan-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="plan">
-                      <button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'plan')">+</button>
-                    </div>
-                    <div class="slot-column actual" id="tasks-actual-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="actual">
-                      <button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'actual')">+</button>
-                    </div>
-                  </div>
-                `).join('')}
+                <div class="timeline-headers"><div class="header-time">時間枠</div><div class="header-plan">🗓️ 計画 (Plan)</div><div class="header-actual">✅ 実行 (Actual)</div></div>
+                ${Object.keys(TIME_SLOTS).map(slotId => `<div class="time-slot" id="slot-${slotId}"><div class="slot-header"><span class="slot-id">${slotId}</span><span class="slot-name">${TIME_SLOTS[slotId].name}</span><span class="slot-time">${TIME_SLOTS[slotId].timeRange}</span></div><div class="slot-column plan" id="tasks-plan-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="plan"><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'plan')">+</button></div><div class="slot-column actual" id="tasks-actual-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="actual"><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'actual')">+</button></div></div>`).join('')}
               </div>
             </div>
           </main>
         </div>
       </div>
 
-      <!-- View 4: Reflection & Action (Review) -->
+      <!-- View 5: Reflection -->
       <div id="reflection-view" class="app-view" style="display:none">
-        <header class="view-header">
-          <h1>🧠 内省とアクション (Review)</h1>
-          <button id="download-review-btn" class="btn primary">📄 レポート出力</button>
-        </header>
+        <header class="view-header"><h1>🧠 内省とアクション (Review)</h1><button id="download-review-btn" class="btn primary">📄 レポート出力</button></header>
         <div class="view-body">
           <div class="memo-container enhanced">
             <div class="analysis-workflow">
-              
-              <!-- Section 1: Fact -->
               <section class="analysis-section">
                 <div class="section-label">事実 (Fact)</div>
                 <div class="box-header"><span class="icon">🔍</span><h3>本日の実績とタスクログ</h3></div>
                 <div class="memo-section fact-summary-box standard-panel">
                   <div id="fact-summary" class="summary-text">算出中...</div>
+                  <div style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 15px;">
+                    <h4 style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">📉 Vital Variation Analysis</h4>
+                    <div id="mood-chart-review" style="width: 100%; height: 150px;"></div>
+                  </div>
                   <div class="fact-sub-label" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 15px; font-size: 0.8rem; color: var(--text-secondary);">完了タスクの振り返りメモ:</div>
                   <div id="fact-task-logs" class="task-log-list" style="margin-top: 10px;"></div>
                 </div>
               </section>
-
-              <!-- Section 2: Context -->
-              <section class="analysis-section">
-                <div class="section-label">状況整理 (Context)</div>
-                <div class="memo-grid-horizontal">
-                  <div class="memo-section-box good standard-panel">
-                    <div class="box-header"><span class="icon">✅</span><h4>よかったところ (Good)</h4></div>
-                    <textarea id="memo-good" placeholder="成功要因...">${this.state.memoGood}</textarea>
-                  </div>
-                  <div class="memo-section-box improve standard-panel">
-                    <div class="box-header"><span class="icon">🛠️</span><h4>改善メモ (Improvement)</h4></div>
-                    <textarea id="memo-improve" placeholder="課題、ボトルネック...">${this.state.memoImprove}</textarea>
-                  </div>
-                </div>
-              </section>
-
-              <!-- Section 3: Logic Tree -->
-              <section class="analysis-section">
-                <div class="section-label">論理分解 (Why)</div>
-                <div class="box-header"><span class="icon">🌳</span><h3>問題分析ロジックツリー</h3></div>
-                <div class="analysis-tree-container">
-                  <textarea id="memo-analysis-markdown" class="standard-panel" placeholder="なぜ起きたか？を分解...">${this.state.memoAnalysisMarkdown}</textarea>
-                  <div class="analysis-visualizer standard-panel">
-                    <svg id="markmap-svg-analysis"></svg>
-                  </div>
-                </div>
-              </section>
-
-              <!-- Section 4: Core Insight -->
-              <section class="analysis-section insight-focus">
-                <div class="section-label">本質的な解釈 (Insight)</div>
-                <div class="box-header"><span class="icon">💡</span><h3>The Core Insight</h3></div>
-                <textarea id="memo-insight" placeholder="本質的な学びを一言で">${this.state.memoInsight}</textarea>
-              </section>
-
-              <!-- Section 5: Next Action -->
-              <section class="analysis-section action-focus">
-                <div class="section-label">判断 (Judgment)</div>
-                <div class="box-header"><span class="icon">🚀</span><h3>明日へのアクションプラン</h3></div>
-                <div class="memo-section action-section standard-panel">
-                  <textarea id="memo-next-actions" placeholder="具体的なアクション...">${this.state.memoNextActions}</textarea>
-                </div>
-              </section>
-
+              <section class="analysis-section"><div class="section-label">状況整理 (Context)</div><div class="memo-grid-horizontal"><div class="memo-section-box good standard-panel"><div class="box-header"><span class="icon">✅</span><h4>成功要因 (Good)</h4></div><textarea id="memo-good">${this.state.memoGood}</textarea></div><div class="memo-section-box improve standard-panel"><div class="box-header"><span class="icon">🛠️</span><h4>改善メモ (Improvement)</h4></div><textarea id="memo-improve">${this.state.memoImprove}</textarea></div></div></section>
+              <section class="analysis-section"><div class="section-label">論理分解 (Why)</div><div class="box-header"><span class="icon">🌳</span><h3>問題分析ロジックツリー</h3></div><div class="analysis-tree-container"><textarea id="memo-analysis-markdown" class="standard-panel">${this.state.memoAnalysisMarkdown}</textarea><div class="analysis-visualizer standard-panel"><svg id="markmap-svg-analysis"></svg></div></div></section>
+              <section class="analysis-section insight-focus"><div class="section-label">本質的な解釈 (Insight)</div><div class="box-header"><span class="icon">💡</span><h3>The Core Insight</h3></div><textarea id="memo-insight" placeholder="本質的な学びを一言で">${this.state.memoInsight}</textarea></section>
+              <section class="analysis-section action-focus"><div class="section-label">判断 (Judgment)</div><div class="box-header"><span class="icon">🚀</span><h3>明日へのアクションプラン</h3></div><div class="memo-section action-section standard-panel"><textarea id="memo-next-actions">${this.state.memoNextActions}</textarea></div></section>
             </div>
           </div>
         </div>
@@ -367,46 +307,30 @@ class ASMOSApp {
       <!-- Modals -->
       <div id="creation-modal" class="modal-overlay" style="display:none">
         <div class="modal-content large">
-          <nav class="modal-tabs">
-            <button id="tab-task" class="active">✨ タスク追加</button>
-            <button id="tab-node">🏗️ ノード操作</button>
-          </nav>
+          <nav class="modal-tabs"><button id="tab-task" class="active">✨ タスク設定</button><button id="tab-ifthen">💡 if-then設定</button></nav>
           <div id="form-task" class="modal-tab-content">
             <div class="input-grid">
               <div class="input-group"><label>タスク名</label><input type="text" id="task-title"></div>
-              <div class="input-group"><label>スロット</label><select id="task-slot">
-                <option value="STOCK_MONTH">🗓️ 月間ストック</option>
-                <option value="STOCK_WEEK">📅 週間ストック</option>
-                <option value="STOCK_DAY">🚀 本日ストック</option>
-                ${Object.keys(TIME_SLOTS).map(id => `<option value="${id}">${id} - ${TIME_SLOTS[id].name}</option>`).join('')}
-              </select></div>
+              <div class="input-group"><label>スロット</label><select id="task-slot"><option value="STOCK_MONTH">🗓️ 月間ストック</option><option value="STOCK_WEEK">📅 週間ストック</option><option value="STOCK_DAY">🚀 本日ストック</option>${Object.keys(TIME_SLOTS).map(id => `<option value="${id}">${id} - ${TIME_SLOTS[id].name}</option>`).join('')}</select></div>
               <div class="input-group"><label>重要度</label><select id="task-importance"><option value="High">🔴 高</option><option value="Mid" selected>🟡 中</option><option value="Low">🔵 低</option></select></div>
-              <div class="input-group"><label>目的ラベル</label><input type="text" id="task-goal-label"></div>
+              <div class="input-group"><label>プロジェクト</label><select id="task-project-id"><option value="">(なし)</option></select></div>
               <div class="input-group"><label>締め切り時刻</label><input type="time" id="task-deadline"></div>
               <div class="input-group"><label>見積時間 (分)</label><input type="number" id="task-estimated" value="60"></div>
               <div class="input-group"><label>モード</label><select id="task-mode"><option value="normal">⚡ 消費</option><option value="recovery">🌿 回復</option></select></div>
-              <div class="input-group"><label>推定HP消費</label><input type="number" id="task-hp-est" value="10"></div>
             </div>
-            <div class="input-group"><label>完了定義 (DoD)</label><textarea id="task-dod"></textarea></div>
+            <div class="input-group"><label>完了定義 (DoD) <span style="color: var(--danger-color); font-weight: bold;">(必須)</span></label><textarea id="task-dod" placeholder="例: 報告書のドラフトを受領確認まで"></textarea></div>
           </div>
-          <div id="form-node" class="modal-tab-content" style="display:none"><div class="input-group"><label id="node-label">ノード名</label><input type="text" id="node-text"></div></div>
-          <div class="modal-controls">
-            <button id="creation-delete" class="btn danger" style="display:none; margin-right: auto;">🗑️ 削除</button>
-            <button id="creation-cancel" class="btn">キャンセル</button>
-            <button id="creation-submit" class="btn primary">保存</button>
-          </div>
+          <div id="form-ifthen" class="modal-tab-content" style="display:none"><div class="input-grid"><div class="input-group"><label>もし〜なら (Condition)</label><input type="text" id="ifthen-condition" placeholder="例: 18:15になったら"></div><div class="input-group"><label>そのとき〜する (Action)</label><input type="text" id="ifthen-action" placeholder="例: PCをシャットダウン"></div><div class="input-group"><label>カテゴリ</label><select id="ifthen-category"><option value="Habit">🏃 習慣</option><option value="Risk">🛡️ リスク回避</option><option value="Work">💼 業務</option></select></div></div></div>
+          <div class="modal-controls"><button id="creation-delete" class="btn danger" style="display:none; margin-right: auto;">🗑️ 削除</button><button id="creation-cancel" class="btn">キャンセル</button><button id="creation-submit" class="btn primary">保存</button></div>
         </div>
       </div>
 
       <div id="completion-modal" class="modal-overlay" style="display:none">
         <div class="modal-content">
-          <div class="box-header"><span class="icon">🏁</span><h2>実績記録 (Fact-Check)</h2></div>
-          <div class="input-group"><label>HP変動量</label>
-            <div class="rating-group" id="hp-rating"><button data-value="25" class="btn">😫</button><button data-value="20" class="btn">😩</button><button data-value="15" class="btn">😐</button><button data-value="10" class="btn">😊</button><button data-value="5" class="btn">🤩</button></div>
-          </div>
-          <div class="input-group"><label>品質評価</label>
-            <div class="rating-group" id="quality-rating"><button data-value="1" class="btn">Low</button><button data-value="2" class="btn">Mid</button><button data-value="3" class="btn">High</button></div>
-          </div>
+          <div class="box-header"><span class="icon">🏁</span><h2>実績記録</h2></div>
+          <div class="input-group"><label>今の気分・状態</label><div class="rating-group" id="mood-rating"><button data-value="-100" class="btn">😫</button><button data-value="-50" class="btn">😩</button><button data-value="0" class="btn">😐</button><button data-value="50" class="btn">😊</button><button data-value="100" class="btn">🤩</button></div></div>
+          <div class="input-group"><label>品質評価</label><div class="rating-group" id="quality-rating"><button data-value="1" class="btn">Low</button><button data-value="2" class="btn">Mid</button><button data-value="3" class="btn">High</button></div></div>
+          <div class="input-group"><label>実際にかかった時間 (分)</label><input type="number" id="completion-actual-time" value="60"></div>
           <div class="input-group"><label><input type="checkbox" id="risk-check"> リスク顕在化</label></div>
           <div class="input-group"><label>内省ノート</label><textarea id="completion-note"></textarea></div>
           <div class="modal-controls"><button id="modal-cancel" class="btn">キャンセル</button><button id="modal-submit" class="btn primary">実績保存</button></div>
@@ -419,6 +343,7 @@ class ASMOSApp {
 
   private bindEvents() {
     document.getElementById('add-task-btn')?.addEventListener('click', () => this.handleAddTask());
+    document.getElementById('auto-schedule-btn')?.addEventListener('click', () => this.autoScheduleTasks());
     document.getElementById('export-btn-dash')?.addEventListener('click', () => ASMOSStorage.exportState(this.state));
     document.getElementById('import-btn-dash')?.addEventListener('click', () => (document.getElementById('import-file-dash') as HTMLInputElement).click());
     document.getElementById('import-file-dash')?.addEventListener('change', async (e) => {
@@ -430,9 +355,10 @@ class ASMOSApp {
     document.getElementById('modal-submit')?.addEventListener('click', () => this.handleModalSubmit());
     document.getElementById('creation-cancel')?.addEventListener('click', () => this.closeModal('creation-modal'));
     document.getElementById('creation-submit')?.addEventListener('click', () => this.handleCreationSubmit());
-    document.getElementById('creation-delete')?.addEventListener('click', () => this.handleDeleteTask());
+    document.getElementById('creation-delete')?.addEventListener('click', () => this.handleDeleteEntry());
     document.getElementById('tab-task')?.addEventListener('click', () => this.switchCreationTab('task'));
-    document.getElementById('tab-node')?.addEventListener('click', () => this.switchCreationTab('node'));
+    document.getElementById('tab-ifthen')?.addEventListener('click', () => this.switchCreationTab('ifthen'));
+    document.getElementById('add-ifthen-btn')?.addEventListener('click', () => this.handleAddIfThen());
     document.getElementById('download-review-btn')?.addEventListener('click', () => this.downloadDailyReview());
 
     ['memo-good', 'memo-improve', 'memo-insight', 'memo-next-actions'].forEach(id => {
@@ -447,19 +373,64 @@ class ASMOSApp {
       this.updateMindMap('analysis');
     });
 
-    this.setupRatingButtons('hp-rating');
+    this.setupRatingButtons('mood-rating');
     this.setupRatingButtons('quality-rating');
 
-    document.getElementById('mm-textarea')?.addEventListener('input', (e) => { this.state.mindMapMarkdown = (e.target as HTMLTextAreaElement).value; ASMOSStorage.saveState(this.state); this.updateMindMap('goal'); });
+    document.getElementById('mm-textarea')?.addEventListener('input', (e) => {
+      const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
+      if (proj) {
+        proj.markdown = (e.target as HTMLTextAreaElement).value;
+        ASMOSStorage.saveState(this.state);
+        this.updateMindMap('goal');
+      }
+    });
     document.getElementById('mm-download-btn')?.addEventListener('click', () => this.downloadMindMap());
     document.getElementById('mm-upload-btn')?.addEventListener('click', () => (document.getElementById('mm-import-file') as HTMLInputElement).click());
     document.getElementById('mm-import-file')?.addEventListener('change', (e) => this.handleMindMapUpload(e));
+    document.getElementById('add-project-btn')?.addEventListener('click', () => this.addProject());
+  }
 
-    document.getElementById('mm-add-child')?.addEventListener('click', () => this.handleNodeAction('add'));
-    document.getElementById('mm-edit-node')?.addEventListener('click', () => this.handleNodeAction('edit'));
-    document.getElementById('mm-delete-node')?.addEventListener('click', () => this.guiDeleteNode());
-    
-    document.addEventListener('click', (e) => { if (!(e.target as HTMLElement).closest('.markmap-node') && !(e.target as HTMLElement).closest('.node-actions-menu')) this.hideNodeMenu(); });
+  private renderProjects() {
+    const list = document.getElementById('project-list');
+    if (!list) return;
+    list.innerHTML = this.state.projects.map(p => `
+      <div class="project-item ${p.id === this.state.selectedProjectId ? 'active' : ''}" onclick="window.app.selectProject('${p.id}')">
+        <span>${p.title}</span>
+        <button class="delete-btn btn subtle" onclick="event.stopPropagation(); window.app.deleteProject('${p.id}')">🗑️</button>
+      </div>
+    `).join('');
+  }
+
+  public addProject() {
+    const title = prompt('プロジェクト名を入力してください');
+    if (!title) return;
+    const newProject: ProjectEntity = { id: crypto.randomUUID(), title: title, markdown: `# ${title}\n\n## 目的\n- ` };
+    this.state.projects.push(newProject);
+    this.state.selectedProjectId = newProject.id;
+    ASMOSStorage.saveState(this.state);
+    this.renderProjects();
+    this.updateMindMap('goal');
+  }
+
+  public deleteProject(id: string) {
+    if (this.state.projects.length <= 1) return alert('最後のプロジェクトは削除できません');
+    if (!confirm('プロジェクトを削除しますか？')) return;
+    this.state.projects = this.state.projects.filter(p => p.id !== id);
+    if (this.state.selectedProjectId === id) this.state.selectedProjectId = this.state.projects[0].id;
+    ASMOSStorage.saveState(this.state);
+    this.renderProjects();
+    this.updateMindMap('goal');
+  }
+
+  public selectProject(id: string) {
+    const current = this.state.projects.find(p => p.id === this.state.selectedProjectId);
+    if (current) current.markdown = (document.getElementById('mm-textarea') as HTMLTextAreaElement).value;
+    this.state.selectedProjectId = id;
+    const next = this.state.projects.find(p => p.id === id);
+    if (next) (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = next.markdown;
+    ASMOSStorage.saveState(this.state);
+    this.renderProjects();
+    this.updateMindMap('goal');
   }
 
   private initDragAndDrop() {
@@ -473,29 +444,67 @@ class ASMOSApp {
   private handleTaskDrop(taskId: string, slotId: TimeSlotID, column: 'plan' | 'actual' | 'stock') {
     const task = this.state.tasks.find(t => t.id === taskId); if (!task) return;
     const wasActual = task.is_actual; task.slot = slotId;
-    if (column === 'stock') { if (wasActual) this.state.userHP += (task.is_recovery ? -task.cost.actual_hp : task.cost.actual_hp); task.is_planned = false; task.is_actual = false; task.cost.actual_hp = 0; }
-    else if (column === 'actual' && !wasActual) { this.currentTaskIdForModal = taskId; this.openCompletionModal(); return; }
-    else if (column === 'plan') { if (wasActual) { this.state.userHP += (task.is_recovery ? -task.cost.actual_hp : task.cost.actual_hp); task.is_actual = false; task.cost.actual_hp = 0; } task.is_planned = true; }
+    if (column === 'stock') { task.is_planned = false; task.is_actual = false; task.cost.actual_time = 0; }
+    else if (column === 'actual' && !wasActual) { this.currentTaskIdForModal = taskId; this.openCompletionModal(task); return; }
+    else if (column === 'plan') { task.is_actual = false; task.cost.actual_time = 0; task.is_planned = true; }
     ASMOSStorage.saveState(this.state); this.render();
   }
 
   private calculateUrgency(deadline?: string): { score: number, label: string } {
     if (!deadline) return { score: 0, label: '' };
     const now = new Date(); const [h, m] = deadline.split(':').map(Number);
-    const deadDate = new Date(); deadDate.setHours(h, m, 0);
-    const diffMin = (deadDate.getTime() - now.getTime()) / 60000;
+    const deadDate = new Date(); deadDate.setHours(h, m, 0); const diffMin = (deadDate.getTime() - now.getTime()) / 60000;
     if (diffMin < 0) return { score: 100, label: 'OVER' };
     if (diffMin > 180) return { score: 10, label: '' };
-    const score = Math.floor(100 - (diffMin / 180) * 100);
-    return { score, label: diffMin < 30 ? 'SOON' : '' };
+    return { score: Math.floor(100 - (diffMin / 180) * 100), label: diffMin < 30 ? 'SOON' : '' };
   }
 
   private getImportanceValue(imp: Importance): number { return imp === 'High' ? 3 : (imp === 'Mid' ? 2 : 1); }
   private getTaskScore(task: TaskEntity): number { return this.getImportanceValue(task.importance) * this.calculateUrgency(task.deadline).score; }
 
+  private getAdjustedTime(minutes: number): number { return Math.ceil(minutes * 1.5); }
+
+  private autoScheduleTasks() {
+    const unassignedTasks = this.state.tasks.filter(t => t.slot === 'STOCK_DAY' && !t.is_actual);
+    if (unassignedTasks.length === 0) return;
+    unassignedTasks.sort((a, b) => {
+      if (a.goal_label !== b.goal_label) return (a.goal_label || '').localeCompare(b.goal_label || '');
+      return this.getTaskScore(b) - this.getTaskScore(a);
+    });
+    const slotCapacities: Record<string, number> = {};
+    Object.keys(TIME_SLOTS).forEach(slotId => {
+      const cfg = TIME_SLOTS[slotId];
+      const totalCap = (cfg.endHour - cfg.startHour) * 60;
+      const usableCap = totalCap * 0.8;
+      const currentUsage = this.state.tasks.filter(t => t.slot === slotId && t.is_planned).reduce((sum, t) => sum + this.getAdjustedTime(t.cost.estimated_time), 0);
+      slotCapacities[slotId] = usableCap - currentUsage;
+    });
+    const GLOBAL_LIMIT = 480; 
+    let currentTotalPlanned = this.state.tasks.filter(t => t.is_planned && !t.slot.startsWith('STOCK')).reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
+    let allocationCount = 0;
+    for (const task of unassignedTasks) {
+      const adjustedTime = this.getAdjustedTime(task.cost.estimated_time);
+      if (currentTotalPlanned + adjustedTime > GLOBAL_LIMIT) continue;
+      for (const slotId of Object.keys(TIME_SLOTS)) {
+        if (slotCapacities[slotId] >= adjustedTime) {
+          task.slot = slotId as TimeSlotID;
+          task.is_planned = true;
+          slotCapacities[slotId] -= adjustedTime;
+          currentTotalPlanned += adjustedTime;
+          allocationCount++;
+          break; 
+        }
+      }
+    }
+    if (allocationCount > 0) { ASMOSStorage.saveState(this.state); this.render(); alert(`⚡ ${allocationCount}件を最適配置。`); }
+    else { alert('⚠️ 配置可能な枠がありません。'); }
+  }
+
   private render() {
     this.renderDashboard();
     this.renderTimezone();
+    this.renderProjects(); // Render project list in sidebar
+    this.renderIfthen();
     this.renderReflectionFact();
     this.updateTimeIndicator();
   }
@@ -503,21 +512,20 @@ class ASMOSApp {
   private renderDashboard() {
     const plannedTasks = this.state.tasks.filter(t => t.is_planned);
     const actualTasks = this.state.tasks.filter(t => t.is_actual);
-    const remainingCount = plannedTasks.filter(t => !t.is_actual).length;
-    const totalPlannedMinutes = plannedTasks.reduce((sum, t) => sum + t.cost.estimated_time, 0);
-    const totalActualHP = actualTasks.reduce((sum, t) => sum + (t.is_recovery ? -t.cost.actual_hp : t.cost.actual_hp), 0);
-
-    const hpDashValue = document.getElementById('dash-hp-value');
-    if (hpDashValue) hpDashValue.innerText = this.state.userHP.toString();
-    const hpBarFill = document.getElementById('hp-bar-fill');
-    if (hpBarFill) hpBarFill.style.width = `${Math.min(100, Math.max(0, this.state.userHP))}%`;
-    
-    document.getElementById('dash-planned-time')!.innerText = `${totalPlannedMinutes} min`;
-    document.getElementById('dash-actual-time')!.innerText = `${totalActualHP} units`;
-    document.getElementById('dash-remaining-tasks')!.innerText = remainingCount.toString();
+    const lastMood = this.state.moodHistory[this.state.moodHistory.length - 1];
+    const hpStatus = document.getElementById('current-mood-status');
+    if (hpStatus) hpStatus.innerText = `Status: ${lastMood?.emoji || '🤩'}`;
+    const dashHP = document.getElementById('dash-hp-value');
+    if (dashHP) dashHP.innerText = (lastMood?.value || 100).toString();
+    document.getElementById('dash-planned-time')!.innerText = `${plannedTasks.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0)} min`;
+    document.getElementById('dash-actual-time')!.innerText = `${actualTasks.reduce((s, t) => s + t.cost.actual_time, 0)} min`;
+    document.getElementById('dash-remaining-tasks')!.innerText = plannedTasks.filter(t => !t.is_actual).length.toString();
+    this.drawMoodChart('mood-chart-dash', this.state.moodHistory);
   }
 
   private renderTimezone() {
+    const now = new Date();
+    const currentHour = now.getHours() + now.getMinutes() / 60;
     ['STOCK_MONTH', 'STOCK_WEEK', 'STOCK_DAY'].forEach(lvl => {
       const col = document.getElementById(`tasks-stock-${lvl.split('_')[1].toLowerCase()}`);
       if (col) {
@@ -526,41 +534,57 @@ class ASMOSApp {
         col.innerHTML = tasks.map(t => this.createTaskCardHTML(t, 'stock')).join('');
       }
     });
-
     Object.keys(TIME_SLOTS).forEach(slotId => {
       const pCol = document.getElementById(`tasks-plan-${slotId}`); 
       const aCol = document.getElementById(`tasks-actual-${slotId}`); 
       const el = document.getElementById(`slot-${slotId}`);
       if (pCol && aCol && el) {
-        const cfg = TIME_SLOTS[slotId]; const cap = (cfg.endHour - cfg.startHour) * 60;
+        const cfg = TIME_SLOTS[slotId];
+        const totalCap = (cfg.endHour - cfg.startHour) * 60;
+        const usableCap = Math.floor(totalCap * 0.8);
         const tasks = this.state.tasks.filter(t => t.slot === slotId); 
         const plTasks = tasks.filter(t => t.is_planned);
-        const total = plTasks.reduce((s, t) => s + t.cost.estimated_time, 0); 
-        const over = total > cap;
-
+        const totalAdjustedUsage = plTasks.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
+        const overUsable = totalAdjustedUsage > usableCap;
+        const isOverdue = currentHour > cfg.endHour;
         const head = el.querySelector('.slot-header'); 
         if (head) { 
-          const old = head.querySelector('.slot-time-usage'); 
-          if (old) old.remove(); 
-          head.insertAdjacentHTML('beforeend', `<div class="slot-time-usage ${over ? 'error' : ''}">${total}/${cap} min ${over ? `<span class="over-label">⚠️ OVER</span>` : ''}</div>`); 
+          const old = head.querySelector('.slot-time-usage'); if (old) old.remove(); 
+          head.insertAdjacentHTML('beforeend', `<div class="slot-time-usage ${overUsable ? 'error' : ''}">${totalAdjustedUsage}/${usableCap}m (adj) ${overUsable ? `<span class="over-label">⚠️ NO SLACK</span>` : ''}<div style="font-size: 0.6rem; opacity: 0.6; margin-top: 2px;">Slack Reserved: ${totalCap - usableCap}m</div></div>`); 
         }
-        el.classList.toggle('over-capacity', over);
+        el.classList.toggle('over-capacity', overUsable);
+        const hasUnfinished = plTasks.some(t => !t.is_actual);
+        el.style.backgroundColor = (isOverdue && hasUnfinished) ? 'rgba(218, 54, 51, 0.08)' : '';
         pCol.innerHTML = `<button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'plan')">+</button>` + plTasks.map(t => this.createTaskCardHTML(t, 'plan')).join('');
         aCol.innerHTML = `<button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'actual')">+</button>` + tasks.filter(t => t.is_actual).map(t => this.createTaskCardHTML(t, 'actual')).join('');
       }
     });
-    const hpVal = document.getElementById('hp-value'); if (hpVal) hpVal.innerText = this.state.userHP.toString();
+  }
+
+  private renderIfthen() {
+    const listContainer = document.getElementById('ifthen-list'); if (!listContainer) return;
+    if (this.state.ifThenPlans.length === 0) { listContainer.innerHTML = '<div class="hint" style="text-align: center; padding: 40px;">まだプランがありません</div>'; return; }
+    const categories = [{ id: 'Habit', name: '🏃 習慣' }, { id: 'Risk', name: '🛡️ リスク回避' }, { id: 'Work', name: '💼 業務' }];
+    listContainer.innerHTML = categories.map(cat => {
+      const plans = this.state.ifThenPlans.filter(p => p.category === cat.id); if (plans.length === 0) return '';
+      return `<section class="ifthen-genre-section"><h3 class="genre-title">${cat.name}</h3><div class="ifthen-grid">${plans.map(p => `<div class="ifthen-card standard-panel" onclick="window.app.handleEditIfThenPlan('${p.id}')"><div class="ifthen-logic"><div class="condition"><strong>If:</strong> ${p.condition}</div><div class="arrow">➔</div><div class="action"><strong>Then:</strong> ${p.action}</div></div></div>`).join('')}</div></section>`;
+    }).join('');
   }
 
   private renderReflectionFact() {
-    const fact = document.getElementById('fact-summary'); const logs = document.getElementById('fact-task-logs');
+    const fact = document.getElementById('fact-summary');
+    const logs = document.getElementById('fact-task-logs');
     if (fact) {
-      const acts = this.state.tasks.filter(t => t.is_actual); const hp = acts.reduce((s, t) => s + (t.is_recovery ? -t.cost.actual_hp : t.cost.actual_hp), 0);
-      fact.innerHTML = `実行タスク： ${acts.length}<br>総HP消費量： ${hp}`;
-      if (logs) { 
-        if (acts.length === 0) logs.innerHTML = '<div class="hint">完了済みのタスクはありません</div>'; 
-        else logs.innerHTML = acts.map(t => `<div class="task-log-item" style="margin-bottom: 12px; border-left: 2px solid var(--accent-color); padding-left: 12px;"><div style="font-weight: 600; font-size: 0.9rem;">${t.title}</div><div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">${t.note || '(内省メモなし)'}</div></div>`).join(''); 
-      }
+      const acts = this.state.tasks.filter(t => t.is_actual);
+      const totalPlanned = acts.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
+      const totalActual = acts.reduce((s, t) => s + t.cost.actual_time, 0);
+      const totalDiff = totalActual - totalPlanned;
+      fact.innerHTML = `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"><div><strong>実行タスク：</strong> ${acts.length}</div><div><strong>予定時間 (adj)：</strong> ${totalPlanned}m<br><strong>実測時間：</strong> ${totalActual}m <span style="color: ${totalDiff > 0 ? 'var(--danger-color)' : 'var(--success-color)'}; font-weight: bold;">(${totalDiff > 0 ? '+' : ''}${totalDiff}m)</span></div></div>`;
+      if (logs) logs.innerHTML = acts.length === 0 ? '<div class="hint">なし</div>' : acts.map(t => {
+        const p = this.getAdjustedTime(t.cost.estimated_time); const a = t.cost.actual_time; const d = a - p;
+        return `<div class="task-log-item" style="margin-bottom: 15px; border-left: 3px solid var(--accent-color); padding-left: 15px;"><div style="display: flex; justify-content: space-between; align-items: baseline;"><div style="font-weight: 600; font-size: 0.95rem;">${t.title}</div><div style="font-size: 0.8rem; font-family: monospace;">${p}m (adj) ➔ ${a}m <strong style="color: ${d > 0 ? 'var(--danger-color)' : (d < 0 ? 'var(--success-color)' : 'var(--text-secondary)')};">(${d > 0 ? '+' : ''}${d}m)</strong></div></div><div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">${t.note || '(なし)'}</div></div>`;
+      }).join('');
+      this.drawMoodChart('mood-chart-review', this.state.moodHistory);
     }
   }
 
@@ -568,149 +592,131 @@ class ASMOSApp {
     const isBoth = t.is_planned && t.is_actual; const isUn = !t.is_planned && t.is_actual;
     const urg = this.calculateUrgency(t.deadline); const score = this.getTaskScore(t);
     let mod = isBoth ? 'success' : (isUn ? 'unplanned' : ''); if (t.is_recovery) mod += ' recovery';
-    return `<div class="task-card ${mod}" id="task-${t.id}" draggable="true" onclick="window.app.handleEditTask('${t.id}')"><div class="card-badges">${t.importance === 'High' ? '<span class="badge high">高</span>' : ''}${t.goal_label ? `<span class="badge goal">${t.goal_label}</span>` : ''}${score > 0 && t.slot === 'STOCK_DAY' ? `<span class="badge score">pts: ${score}</span>` : ''}${urg.score > 70 ? '<span class="badge urgency">🔥</span>' : ''}</div><div class="task-title">${t.title}</div><div class="task-meta"><span class="duration">⏱️ ${t.cost.estimated_time}m</span><span class="cost">${t.is_actual ? (t.is_recovery ? '+' : '-') + t.cost.actual_hp : (t.is_recovery ? '🌿 ' : '予 ') + t.cost.hp_consumption}</span><button onclick="event.stopPropagation(); window.app.toggleTask('${t.id}')" class="btn subtle">${t.is_actual ? '戻す' : '完了'}</button></div></div>`;
+    const project = this.state.projects.find(p => p.id === t.goal_label);
+    const projLabel = project ? project.title : '';
+    return `<div class="task-card ${mod}" id="task-${t.id}" draggable="true" onclick="window.app.handleEditTask('${t.id}')"><div class="card-badges">${t.importance === 'High' ? '<span class="badge high">高</span>' : ''}${projLabel ? `<span class="badge goal">${projLabel}</span>` : ''}${score > 0 && t.slot === 'STOCK_DAY' ? `<span class="badge score">pts: ${score}</span>` : ''}${urg.score > 70 ? '<span class="badge urgency">🔥</span>' : ''}</div><div class="task-title">${t.title}</div><div class="task-meta"><span class="duration">⏱️ ${t.cost.estimated_time}m</span><button onclick="event.stopPropagation(); window.app.toggleTask('${t.id}')" class="btn subtle">${t.is_actual ? '戻す' : '完了'}</button></div></div>`;
   }
 
   public handleAddTaskInline(slot: TimeSlotID, column: 'plan' | 'actual' | 'stock') { this.currentTargetSlot = slot; this.currentTargetColumn = column; this.creationMode = 'task'; this.openCreationModal(); (document.getElementById('task-slot') as HTMLSelectElement).value = slot; }
   public handleEditTask(id: string) { const t = this.state.tasks.find(x => x.id === id); if (t) { this.editingTaskId = id; this.creationMode = 'task'; this.openCreationModal(t); } }
-  private handleDeleteTask() { if (this.editingTaskId && confirm('削除しますか？')) { this.state.tasks = this.state.tasks.filter(t => t.id !== this.editingTaskId); ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal'); } }
+  public handleEditIfThenPlan(id: string) { const p = this.state.ifThenPlans.find(x => x.id === id); if (p) { this.editingIfThenId = id; this.creationMode = 'ifthen'; this.openCreationModal(p); } }
+  public handleAddIfThen() { this.editingIfThenId = null; this.creationMode = 'ifthen'; this.openCreationModal(); }
+  private handleDeleteEntry() {
+    if (this.creationMode === 'task' && this.editingTaskId) { if (confirm('削除しますか？')) { this.state.tasks = this.state.tasks.filter(t => t.id !== this.editingTaskId); ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal'); } }
+    else if (this.creationMode === 'ifthen' && this.editingIfThenId) { if (confirm('削除しますか？')) { this.state.ifThenPlans = this.state.ifThenPlans.filter(p => p.id !== this.editingIfThenId); ASMOSStorage.saveState(this.state); this.renderIfthen(); this.closeModal('creation-modal'); } }
+  }
   private handleAddTask() { this.editingTaskId = null; this.creationMode = 'task'; this.openCreationModal(); }
-  private handleNodeAction(action: 'add' | 'edit') { if (this.selectedNode) { this.editingTaskId = null; this.creationMode = 'node'; this.nodeEditMode = action; this.openCreationModal(); } }
-
-  private openCreationModal(task?: TaskEntity) {
+  private openCreationModal(entity?: any) {
     const modal = document.getElementById('creation-modal'); if (!modal) return; modal.style.display = 'flex'; this.switchCreationTab(this.creationMode);
     const delBtn = document.getElementById('creation-delete'); const subBtn = document.getElementById('creation-submit');
     if (this.creationMode === 'task') {
-      if (delBtn) delBtn.style.display = task ? 'block' : 'none'; if (subBtn) subBtn.innerText = task ? '更新' : '保存';
-      (document.getElementById('task-title') as HTMLInputElement).value = task ? task.title : '';
-      (document.getElementById('task-slot') as HTMLSelectElement).value = task ? task.slot : this.currentTargetSlot;
-      (document.getElementById('task-importance') as HTMLSelectElement).value = task ? task.importance : 'Mid';
-      (document.getElementById('task-goal-label') as HTMLInputElement).value = task ? (task.goal_label || '') : '';
-      (document.getElementById('task-deadline') as HTMLInputElement).value = task ? (task.deadline || '') : '';
-      (document.getElementById('task-estimated') as HTMLInputElement).value = task ? task.cost.estimated_time.toString() : '60';
-      (document.getElementById('task-mode') as HTMLSelectElement).value = task ? (task.is_recovery ? 'recovery' : 'normal') : 'normal';
-      (document.getElementById('task-hp-est') as HTMLInputElement).value = task ? task.cost.hp_consumption.toString() : '10';
-      (document.getElementById('task-dod') as HTMLTextAreaElement).value = task ? task.quality.dod : '';
+      const projSelect = document.getElementById('task-project-id') as HTMLSelectElement;
+      if (projSelect) {
+        projSelect.innerHTML = '<option value="">(なし)</option>' + this.state.projects.map(p => `<option value="${p.id}">${p.title}</option>`).join('');
+      }
+
+      if (delBtn) delBtn.style.display = entity ? 'block' : 'none'; if (subBtn) subBtn.innerText = entity ? '更新' : '保存';
+      (document.getElementById('task-title') as HTMLInputElement).value = entity ? entity.title : '';
+      (document.getElementById('task-slot') as HTMLSelectElement).value = entity ? entity.slot : this.currentTargetSlot;
+      (document.getElementById('task-importance') as HTMLSelectElement).value = entity ? entity.importance : 'Mid';
+      (document.getElementById('task-project-id') as HTMLSelectElement).value = entity ? (entity.goal_label || '') : '';
+      (document.getElementById('task-deadline') as HTMLInputElement).value = entity ? (entity.deadline || '') : '';
+      (document.getElementById('task-estimated') as HTMLInputElement).value = entity ? entity.cost.estimated_time.toString() : '60';
+      (document.getElementById('task-mode') as HTMLSelectElement).value = entity ? (entity.is_recovery ? 'recovery' : 'normal') : 'normal';
+      (document.getElementById('task-dod') as HTMLTextAreaElement).value = entity ? entity.quality.dod : '';
     } else {
-      if (delBtn) delBtn.style.display = 'none'; if (subBtn) subBtn.innerText = '保存';
-      (document.getElementById('node-text') as HTMLInputElement).value = this.nodeEditMode === 'edit' ? this.selectedNode.content : '';
+      if (delBtn) delBtn.style.display = entity ? 'block' : 'none'; if (subBtn) subBtn.innerText = entity ? '更新' : '保存';
+      (document.getElementById('ifthen-condition') as HTMLInputElement).value = entity ? entity.condition : '';
+      (document.getElementById('ifthen-action') as HTMLInputElement).value = entity ? entity.action : '';
+      (document.getElementById('ifthen-category') as HTMLSelectElement).value = entity ? entity.category : 'Habit';
     }
   }
-
-  private switchCreationTab(tab: 'task' | 'node') {
-    this.creationMode = tab; document.getElementById('tab-task')?.classList.toggle('active', tab === 'task'); document.getElementById('tab-node')?.classList.toggle('active', tab === 'node');
-    document.getElementById('form-task')!.style.display = tab === 'task' ? 'block' : 'none'; document.getElementById('form-node')!.style.display = tab === 'node' ? 'block' : 'none';
-  }
-
+  private switchCreationTab(tab: 'task' | 'ifthen') { this.creationMode = tab; document.getElementById('tab-task')?.classList.toggle('active', tab === 'task'); document.getElementById('tab-ifthen')?.classList.toggle('active', tab === 'ifthen'); document.getElementById('form-task')!.style.display = tab === 'task' ? 'block' : 'none'; document.getElementById('form-ifthen')!.style.display = tab === 'ifthen' ? 'block' : 'none'; }
   private handleCreationSubmit() {
     if (this.creationMode === 'task') {
       const title = (document.getElementById('task-title') as HTMLInputElement).value; if (!title) return;
-      const slot = (document.getElementById('task-slot') as HTMLSelectElement).value as TimeSlotID;
-      const imp = (document.getElementById('task-importance') as HTMLSelectElement).value as Importance;
-      const dead = (document.getElementById('task-deadline') as HTMLInputElement).value;
-      const goal = (document.getElementById('task-goal-label') as HTMLInputElement).value;
-      const mode = (document.getElementById('task-mode') as HTMLSelectElement).value;
-      const hp = parseInt((document.getElementById('task-hp-est') as HTMLInputElement).value);
-      const est = parseInt((document.getElementById('task-estimated') as HTMLInputElement).value);
-      const dod = (document.getElementById('task-dod') as HTMLTextAreaElement).value;
-
-      if (this.editingTaskId) {
-        const t = this.state.tasks.find(x => x.id === this.editingTaskId);
-        if (t) { t.title = title; t.slot = slot; t.importance = imp; t.deadline = dead; t.goal_label = goal; t.is_recovery = mode === 'recovery'; t.cost.hp_consumption = hp; t.cost.estimated_time = est; t.quality.dod = dod; }
-      } else {
-        this.state.tasks.push({ id: crypto.randomUUID(), scope_id: 'WBS-001', title, slot, cost: { estimated_time: est, actual_time: 0, hp_consumption: hp, actual_hp: 0 }, quality: { dod, success_criteria: '', actual_quality: 0 }, risk: { potential_issue: '', mitigation: '', is_manifested: false }, is_planned: !slot.startsWith('STOCK'), is_actual: false, importance: imp, deadline: dead, goal_label: goal, is_recovery: mode === 'recovery' });
-      }
-      ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal');
-    } else { if (this.nodeEditMode === 'add') this.guiAddChild(); else this.guiEditNode(); }
+      const dod = (document.getElementById('task-dod') as HTMLTextAreaElement).value.trim(); if (!dod) return alert('❌ DoDは必須です');
+      const data = { title, slot: (document.getElementById('task-slot') as HTMLSelectElement).value as TimeSlotID, importance: (document.getElementById('task-importance') as HTMLSelectElement).value as any, deadline: (document.getElementById('task-deadline') as HTMLInputElement).value, goal_label: (document.getElementById('task-project-id') as HTMLSelectElement).value, is_recovery: (document.getElementById('task-mode') as HTMLSelectElement).value === 'recovery', est: parseInt((document.getElementById('task-estimated') as HTMLInputElement).value), dod };
+      if (this.editingTaskId) { const t = this.state.tasks.find(x => x.id === this.editingTaskId); if (t) { t.title = data.title; t.slot = data.slot; t.importance = data.importance; t.deadline = data.deadline; t.goal_label = data.goal_label; t.is_recovery = data.is_recovery; t.cost.estimated_time = data.est; t.quality.dod = data.dod; } }
+      else { this.state.tasks.push({ id: crypto.randomUUID(), scope_id: 'WBS-001', title: data.title, slot: data.slot, cost: { estimated_time: data.est, actual_time: 0 }, quality: { dod: data.dod, success_criteria: '', actual_quality: 0 }, risk: { potential_issue: '', mitigation: '', is_manifested: false }, is_planned: !data.slot.startsWith('STOCK'), is_actual: false, importance: data.importance, deadline: data.deadline, goal_label: data.goal_label, is_recovery: data.is_recovery }); }
+    } else {
+      const cond = (document.getElementById('ifthen-condition') as HTMLInputElement).value; const act = (document.getElementById('ifthen-action') as HTMLInputElement).value; const cat = (document.getElementById('ifthen-category') as HTMLSelectElement).value; if (!cond || !act) return;
+      if (this.editingIfThenId) { const p = this.state.ifThenPlans.find(x => x.id === this.editingIfThenId); if (p) { p.condition = cond; p.action = act; p.category = cat; } }
+      else { this.state.ifThenPlans.push({ id: crypto.randomUUID(), condition: cond, action: act, category: cat }); }
+    }
+    ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal');
   }
-
-  private switchView(view: string) {
-    document.querySelectorAll('.app-view').forEach(el => (el as HTMLElement).style.display = 'none');
-    document.getElementById(`${view}-view`)!.style.display = 'flex';
-    document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.remove('active')); document.getElementById(`nav-${view}`)?.classList.add('active');
-    if (view === 'mindmap') this.initMindMap('goal'); if (view === 'reflection') this.initMindMap('analysis'); this.hideNodeMenu();
-  }
-
-  private initNavigation() {
-    ['dashboard', 'mindmap', 'timezone', 'reflection'].forEach(v => document.getElementById(`nav-${v}`)?.addEventListener('click', () => this.switchView(v)));
-  }
-
-  private initMindMap(type: 'goal' | 'analysis') {
-    const sel = type === 'goal' ? '#markmap-svg-goal' : '#markmap-svg-analysis';
-    const key = type === 'goal' ? 'mmGoal' : 'mmAnalysis';
-    if ((this as any)[key]) { this.updateMindMap(type); return; }
-    (this as any)[key] = (window as any).markmap.Markmap.create(sel, type === 'goal' ? { paddingX: 32 } : { paddingX: 20, autoFit: true, duration: 0 });
-    this.updateMindMap(type);
-  }
-
+  private switchView(view: string) { document.querySelectorAll('.app-view').forEach(el => (el as HTMLElement).style.display = 'none'); document.getElementById(`${view}-view`)!.style.display = 'flex'; document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.remove('active')); document.getElementById(`nav-${view}`)?.classList.add('active'); if (view === 'mindmap') this.initMindMap('goal'); if (view === 'reflection') this.initMindMap('analysis'); if (view === 'ifthen') this.renderIfthen(); }
+  private initNavigation() { ['dashboard', 'mindmap', 'ifthen', 'timezone', 'reflection'].forEach(v => document.getElementById(`nav-${v}`)?.addEventListener('click', () => this.switchView(v))); }
+  private initMindMap(type: 'goal' | 'analysis') { const sel = type === 'goal' ? '#markmap-svg-goal' : '#markmap-svg-analysis'; const key = type === 'goal' ? 'mmGoal' : 'mmAnalysis'; if ((this as any)[key]) { this.updateMindMap(type); return; } (this as any)[key] = (window as any).markmap.Markmap.create(sel, { paddingX: 32 }); this.updateMindMap(type); }
   private updateMindMap(type: 'goal' | 'analysis') {
     const inst = type === 'goal' ? this.mmGoal : this.mmAnalysis; if (!inst) return;
-    const md = type === 'goal' ? this.state.mindMapMarkdown : this.state.memoAnalysisMarkdown;
-    const { root } = new (window as any).markmap.Transformer().transform(md); inst.setData(root);
-    setTimeout(() => inst.fit(), type === 'analysis' ? 50 : 0);
-    if (type === 'goal') setTimeout(() => d3.selectAll('#markmap-svg-goal .markmap-node').on('click', (ev: any, d: any) => { ev.stopPropagation(); this.handleNodeClick(ev, d); }), 100);
-  }
-
-  private handleNodeClick(ev: any, d: any) { this.selectedNode = d; const menu = document.getElementById('mm-node-actions'); if (menu) { menu.style.display = 'block'; menu.style.left = `${ev.pageX + 10}px`; menu.style.top = `${ev.pageY - 20}px`; } }
-  private hideNodeMenu() { const menu = document.getElementById('mm-node-actions'); if (menu) menu.style.display = 'none'; this.selectedNode = null; }
-  private updateMarkdownState(md: string) { this.state.mindMapMarkdown = md; (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = md; ASMOSStorage.saveState(this.state); this.updateMindMap('goal'); }
+    let md = '';
+    if (type === 'goal') {
+      const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
+      md = proj ? proj.markdown : '# Select a project';
+      (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = md;
+    } else {
+      md = this.state.memoAnalysisMarkdown;
+    }
+    const { root } = new (window as any).markmap.Transformer().transform(md); inst.setData(root); setTimeout(() => inst.fit(), 50); }
   private setupRatingButtons(gid: string) { const g = document.getElementById(gid); g?.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { g.querySelectorAll('button').forEach(x => x.classList.remove('selected')); b.classList.add('selected'); })); }
-  private closeModal(id: string) { document.getElementById(id)!.style.display = 'none'; if (id === 'creation-modal') this.hideNodeMenu(); }
-  private downloadMindMap() { const b = new Blob([this.state.mindMapMarkdown], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `asmos_mindmap_${new Date().toISOString().split('T')[0]}.md`; a.click(); }
-  private handleMindMapUpload(e: Event) { const f = (e.target as HTMLInputElement).files?.[0]; if (f) { const r = new FileReader(); r.onload = (ev) => this.updateMarkdownState(ev.target?.result as string); r.readAsText(f); } }
-  
-  private guiAddChild() {
-    const newName = (document.getElementById('node-text') as HTMLInputElement).value; if (!newName) return;
-    const lines = this.state.mindMapMarkdown.split('\n');
-    const idx = lines.findIndex(l => l.includes(this.selectedNode.content)); if (idx === -1) return;
-    const prefix = lines[idx].startsWith('#') ? lines[idx].match(/^#+/)?.[0] + '# ' : lines[idx].match(/^ */)?.[0] + '  - ';
-    lines.splice(idx + 1, 0, prefix + newName); this.updateMarkdownState(lines.join('\n')); this.closeModal('creation-modal');
+  private closeModal(id: string) { document.getElementById(id)!.style.display = 'none'; }
+  private downloadMindMap() {
+    const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
+    if (!proj) return;
+    const b = new Blob([proj.markdown], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(b);
+    a.download = `asmos_goal_${proj.title}.md`;
+    a.click();
   }
-
-  private guiEditNode() {
-    const newName = (document.getElementById('node-text') as HTMLInputElement).value; if (!newName) return;
-    const lines = this.state.mindMapMarkdown.split('\n');
-    const idx = lines.findIndex(l => l.includes(this.selectedNode.content)); if (idx === -1) return;
-    lines[idx] = lines[idx].replace(this.selectedNode.content, newName); this.updateMarkdownState(lines.join('\n')); this.closeModal('creation-modal');
-  }
-
-  private guiDeleteNode() {
-    if (!confirm(`削除しますか？`)) return;
-    const lines = this.state.mindMapMarkdown.split('\n');
-    const idx = lines.findIndex(l => l.includes(this.selectedNode.content)); if (idx === -1) return;
-    let count = 1; const level = this.getLineLevel(lines[idx]);
-    for (let i = idx + 1; i < lines.length; i++) if (this.getLineLevel(lines[i]) > level) count++; else break;
-    lines.splice(idx, count); this.updateMarkdownState(lines.join('\n')); this.hideNodeMenu();
-  }
-
-  private getLineLevel(line: string) { if (line.trim() === '') return 999; if (line.startsWith('#')) return line.match(/^#+/)?.[0].length || 0; return (line.match(/^ */)?.[0].length || 0) + 10; }
-
-  private updateTimeIndicator() {
-    const ind = document.getElementById('time-indicator'); if (!ind) return;
-    const now = new Date(); const current = now.getHours() + now.getMinutes() / 60;
-    if (current < 5 || current > 22) { ind.style.display = 'none'; return; }
-    ind.style.display = 'block';
-    let target = ''; for (const id in TIME_SLOTS) if (current >= TIME_SLOTS[id].startHour && current < TIME_SLOTS[id].endHour) { target = id; break; }
-    if (target) { const el = document.getElementById(`slot-${target}`); if (el) { const cfg = TIME_SLOTS[target]; const pct = (current - cfg.startHour) / (cfg.endHour - cfg.startHour); ind.style.top = `${el.offsetTop + (el.offsetHeight * pct)}px`; } }
-  }
-  private openCompletionModal() { const modal = document.getElementById('completion-modal'); if (modal) modal.style.display = 'flex'; }
+  private handleMindMapUpload(e: Event) { const f = (e.target as HTMLInputElement).files?.[0]; if (f) { const r = new FileReader(); r.onload = (ev) => { this.state.mindMapMarkdown = ev.target?.result as string; (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = this.state.mindMapMarkdown; ASMOSStorage.saveState(this.state); this.updateMindMap('goal'); }; r.readAsText(f); } }
+  private updateTimeIndicator() { const ind = document.getElementById('time-indicator'); if (!ind) return; const now = new Date(); const current = now.getHours() + now.getMinutes() / 60; if (current < 5 || current > 22) { ind.style.display = 'none'; return; } ind.style.display = 'block'; let target = ''; for (const id in TIME_SLOTS) if (current >= TIME_SLOTS[id].startHour && current < TIME_SLOTS[id].endHour) { target = id; break; } if (target) { const el = document.getElementById(`slot-${target}`); if (el) { const cfg = TIME_SLOTS[target]; const pct = (current - cfg.startHour) / (cfg.endHour - cfg.startHour); ind.style.top = `${el.offsetTop + (el.offsetHeight * pct)}px`; } } }
+  private openCompletionModal(task: TaskEntity) { const modal = document.getElementById('completion-modal'); if (!modal) return; modal.style.display = 'flex'; (document.getElementById('completion-actual-time') as HTMLInputElement).value = this.getAdjustedTime(task.cost.estimated_time).toString(); }
   private handleModalSubmit() {
     if (!this.currentTaskIdForModal) return;
-    const hpRating = document.getElementById('hp-rating')?.querySelector('button.selected')?.getAttribute('data-value');
-    if (!hpRating) return alert('HPを選択してください');
-    const task = this.state.tasks.find(t => t.id === this.currentTaskIdForModal);
-    if (task) {
-      task.cost.actual_hp = parseInt(hpRating); task.is_actual = true; 
-      this.state.userHP += (task.is_recovery ? task.cost.actual_hp : -task.cost.actual_hp);
+    const moodBtn = document.getElementById('mood-rating')?.querySelector('button.selected');
+    const moodVal = moodBtn?.getAttribute('data-value');
+    const emoji = (moodBtn as HTMLElement)?.innerText || '😐';
+    if (!moodVal) return alert('気分を選択してください');
+    const actualTime = parseInt((document.getElementById('completion-actual-time') as HTMLInputElement).value);
+    if (isNaN(actualTime)) return alert('実績時間を入力してください');
+    const t = this.state.tasks.find(x => x.id === this.currentTaskIdForModal);
+    if (t) {
+      t.cost.actual_time = actualTime; t.is_actual = true;
+      this.state.moodHistory.push({ timestamp: new Date().toISOString(), value: parseInt(moodVal), emoji });
       ASMOSStorage.saveState(this.state); this.closeModal('completion-modal'); this.render();
     }
   }
-  private downloadDailyReview() {
-    const d = new Date().toISOString().split('T')[0]; const fact = document.getElementById('fact-summary')?.innerText || '';
-    const c = `# ASMOS Reflection - ${d}\n\n## Fact\n${fact}\n\n## Interpretation\n### Good\n${this.state.memoGood}\n### Improvement\n${this.state.memoImprove}\n### Logic Tree\n${this.state.memoAnalysisMarkdown}\n### Insight\n${this.state.memoInsight}\n\n## Judgment\n${this.state.memoNextActions}`;
-    const b = new Blob([c], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `asmos_reflection_${d}.md`; a.click();
-  }
-}
+  private drawMoodChart(containerId: string, data: MoodRecord[]) {
+    const container = document.getElementById(containerId); if (!container || data.length === 0) return; container.innerHTML = '';
+    const width = container.clientWidth; const height = container.clientHeight; const margin = { top: 30, right: 30, bottom: 30, left: 40 };
+    const svg = d3.select(`#${containerId}`).append('svg').attr('width', width).attr('height', height).append('g').attr('transform', `translate(${margin.left},${margin.top})`);
+    const x = d3.scaleTime().domain(d3.extent(data, (d: MoodRecord) => new Date(d.timestamp)) as [Date, Date]).range([0, width - margin.left - margin.right]);
+    const y = d3.scaleLinear().domain([-100, 100]).range([height - margin.top - margin.bottom, 0]);
+    svg.append('g').attr('class', 'grid').attr('opacity', 0.05).call(d3.axisLeft(y).ticks(5).tickSize(-(width - margin.left - margin.right)).tickFormat(() => ""));
 
+    // Neutral line at 0
+    svg.append('line')
+      .attr('x1', 0)
+      .attr('x2', width - margin.left - margin.right)
+      .attr('y1', y(0))
+      .attr('y2', y(0))
+      .attr('stroke', 'var(--text-secondary)')
+      .attr('stroke-width', 1)
+      .attr('stroke-dasharray', '4,4')
+      .attr('opacity', 0.3);
+    const line = d3.line().x((d: MoodRecord) => x(new Date(d.timestamp))).y((d: MoodRecord) => y(d.value)).curve(d3.curveMonotoneX);
+    svg.append('path').datum(data).attr('fill', 'none').attr('stroke', 'var(--accent-color)').attr('stroke-width', 2).attr('d', line);
+    const dots = svg.selectAll('.dot').data(data).enter().append('g').attr('transform', (d: MoodRecord) => `translate(${x(new Date(d.timestamp))},${y(d.value)})`);
+    dots.append('circle').attr('r', 4).attr('fill', 'var(--bg-color)').attr('stroke', 'var(--accent-color)').attr('stroke-width', 2);
+    dots.append('text').text((d: MoodRecord) => d.emoji).attr('y', -12).attr('text-anchor', 'middle').style('font-size', '12px');
+    svg.append('g').attr('transform', `translate(0,${height - margin.top - margin.bottom})`).call(d3.axisBottom(x).ticks(5).tickFormat(d3.timeFormat('%H:%M') as any)).style('color', 'var(--text-secondary)');
+    svg.append('g').call(d3.axisLeft(y).ticks(5)).style('color', 'var(--text-secondary)');
+  }
+  private downloadDailyReview() { const d = new Date().toISOString().split('T')[0]; const fact = document.getElementById('fact-summary')?.innerText || ''; const c = `# Reflection - ${d}\n\n## Fact\n${fact}\n\n## Interpretation\n### Good\n${this.state.memoGood}\n### Improvement\n${this.state.memoImprove}\n### Logic Tree\n${this.state.memoAnalysisMarkdown}\n### Insight\n${this.state.memoInsight}\n\n## Judgment\n${this.state.memoNextActions}`; const b = new Blob([c], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `reflection_${d}.md`; a.click(); }
+  public toggleTask(id: string) { const t = this.state.tasks.find(x => x.id === id); if (t) { if (t.is_actual) { t.is_actual = false; t.cost.actual_time = 0; ASMOSStorage.saveState(this.state); this.render(); } else { this.currentTaskIdForModal = id; this.openCompletionModal(t); } } }
+}
 const app = new ASMOSApp();
 (window as any).app = app;

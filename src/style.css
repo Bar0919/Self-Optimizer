@@ -133,12 +133,6 @@ body {
 .btn.danger:hover { background-color: rgba(218, 54, 51, 0.1); border-color: var(--danger-color); }
 .btn.subtle { color: var(--text-secondary); background: transparent; font-size: 0.8rem; }
 
-.hp-status {
-  font-family: 'Courier New', Courier, monospace;
-  font-weight: bold;
-  font-size: 1.1rem;
-}
-
 /* --- Dashboard --- */
 .dashboard-container {
   max-width: 1000px;
@@ -271,13 +265,6 @@ body {
   z-index: 100;
 }
 
-.header-plan, .header-actual {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
 .time-slot {
   display: grid;
   grid-template-columns: var(--timeline-width) 1fr 1fr;
@@ -332,8 +319,6 @@ body {
   padding: 12px;
   cursor: grab;
   transition: transform 0.1s, box-shadow 0.1s;
-  width: 100%;
-  max-width: 100%;
 }
 .task-card:hover { border-color: var(--text-secondary); transform: translateX(2px); }
 .task-card.success { border-left: 4px solid var(--success-color); background-color: var(--success-bg); }
@@ -365,7 +350,7 @@ body {
 .over-label { display: block; margin-top: 2px; font-size: 0.65rem; background-color: rgba(218, 54, 51, 0.1); padding: 2px 4px; border-radius: 3px; }
 .time-slot.over-capacity { background-color: rgba(218, 54, 51, 0.02); }
 
-/* --- Mind Map Immersion View (RESTORED) --- */
+/* --- Mind Map Immersion View (RESTORED & ENHANCED) --- */
 .mindmap-container.expanded {
   display: flex;
   height: 100%;
@@ -383,6 +368,29 @@ body {
   z-index: 10;
 }
 
+.mindmap-editor textarea {
+  flex-grow: 1;
+  background-color: #010409; /* Deep Black for focus */
+  color: var(--accent-color);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 20px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  resize: none;
+  tab-size: 2;
+  /* Indentation Guides */
+  background-image: linear-gradient(90deg, rgba(88, 166, 255, 0.05) 1px, transparent 1px);
+  background-size: 2ch 100%;
+}
+
+.mindmap-editor textarea:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.15);
+}
+
 .mindmap-visualizer.full {
   flex-grow: 1;
   background-color: var(--bg-color);
@@ -398,7 +406,7 @@ body {
   display: block;
 }
 
-/* Markmap Node Styling (RESTORED HIGH CONTRAST) */
+/* Markmap Node Styling (HIGH CONTRAST) */
 .markmap-node circle { fill: var(--panel-bg) !important; stroke: var(--accent-color) !important; cursor: pointer; }
 .markmap-node div {
   color: #ffffff !important;
@@ -413,7 +421,7 @@ body {
   opacity: 0.5 !important;
 }
 
-/* --- Reflection Workflow (RESTORED FULL FLOW) --- */
+/* --- Reflection Workflow --- */
 .analysis-workflow {
   display: flex;
   flex-direction: column;
@@ -489,7 +497,7 @@ body {
   resize: vertical;
 }
 
-/* Analysis Logic Tree Editor (RESTORED) */
+/* Analysis Logic Tree Editor */
 .analysis-tree-container {
   display: grid;
   grid-template-columns: 300px 1fr;
@@ -502,7 +510,7 @@ body {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 0.9rem;
   line-height: 1.7;
-  background-color: #010409; /* DEEP BLACK RESTORED */
+  background-color: #010409;
   color: var(--accent-color);
   padding: 20px;
   border: 1px solid var(--border-color);
@@ -529,7 +537,6 @@ body {
   overflow: hidden;
 }
 
-/* Core Insight Focus Box (RESTORED) */
 .insight-focus textarea {
   width: 100%;
   min-height: 100px;
@@ -543,8 +550,170 @@ body {
   text-align: center;
 }
 
-.action-section textarea {
-  min-height: 350px;
+/* --- If-Then Planning Styles (REFINED) --- */
+#ifthen-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 20px;
+  padding: 20px 0;
+}
+
+.ifthen-card {
+  cursor: pointer;
+  transition: transform 0.2s, border-color 0.2s;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  background-color: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 20px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.ifthen-card:hover {
+  border-color: var(--accent-color);
+  transform: translateY(-3px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+
+.ifthen-logic {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin: 10px 0;
+}
+
+.ifthen-logic .condition, .ifthen-logic .action {
+  font-size: 1.05rem;
+  line-height: 1.5;
+  width: 100%;
+  text-align: center;
+}
+
+.ifthen-logic .condition {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.ifthen-logic .action {
+  color: var(--accent-color);
+  font-weight: 700;
+}
+
+.ifthen-logic .arrow {
+  font-size: 1.4rem;
+  color: var(--text-secondary);
+  opacity: 0.4;
+}
+
+.ifthen-logic strong {
+  display: block;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 4px;
+  opacity: 0.6;
+}
+
+/* --- Genre-based If-Then Layout --- */
+.ifthen-genre-section {
+  display: flex;
+  flex-direction: column;
+  gap: 15px;
+}
+
+.genre-title {
+  margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-color);
+  padding-bottom: 10px;
+}
+
+.ifthen-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 15px;
+}
+
+.ifthen-card {
+  min-height: 120px !important;
+  padding: 15px !important;
+}
+
+.ifthen-card .ifthen-logic {
+  margin: 0;
+}
+
+/* --- Project Sidebar Styles --- */
+.project-sidebar {
+  width: 240px;
+  background-color: var(--panel-bg);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-md);
+  gap: 15px;
+  overflow-y: auto;
+}
+
+.project-item {
+  padding: 10px 15px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.2s;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+.project-item:hover {
+  background-color: var(--panel-bg-alt);
+  border-color: var(--border-color);
+}
+
+.project-item.active {
+  background-color: var(--accent-color);
+  color: white;
+}
+
+.project-item .delete-btn {
+  opacity: 0;
+  transition: opacity 0.2s;
+  font-size: 0.8rem;
+}
+
+.project-item:hover .delete-btn {
+  opacity: 1;
+}
+
+/* --- Mood Chart Styles --- */
+#mood-chart-dash, #mood-chart-review {
+  background-color: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+  overflow: visible;
+}
+
+.grid line {
+  stroke: var(--text-secondary);
+}
+
+.grid path {
+  stroke-width: 0;
+}
+
+.hp-status#current-mood-status {
+  background-color: var(--panel-bg-alt);
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border-color);
+  font-size: 1.2rem;
 }
 
 /* --- Modals --- */
@@ -599,6 +768,5 @@ body {
   border-radius: var(--radius-md); padding: 5px; display: flex; gap: 5px; box-shadow: 0 10px 20px rgba(0, 0, 0, 0.4); z-index: 300;
 }
 .node-actions-menu button {
-  background: var(--bg-color); border: 1px solid var(--border-color);
-  color: var(--text-primary); padding: 5px 10px; border-radius: 4px; cursor: pointer;
+  background: var(--bg-color); border: 1px solid var(--border-color); color: var(--text-primary); padding: 5px 10px; border-radius: 4px; cursor: pointer;
 }
