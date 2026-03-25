@@ -1,722 +1,498 @@
-// ASMOS (Autonomous Self-Management OS)
-// Core Application Logic & State Management
+/**
+ * ASMOS (Autonomous Self-Management OS)
+ * Vue 3, Vuetify 3, and mo.js
+ * SVG Mind Map Engine (Custom D3 Alternative)
+ * FIXED: Goal Achievement & Life-cycle Sync
+ */
 
-declare const markmap: any;
-declare const d3: any;
+declare const Vue: any;
+declare const Vuetify: any;
+declare const mojs: any;
 
-// --- Types & Interfaces ---
+// --- 1. Domain Types ---
 
 type TimeSlotID = 'T1' | 'T2' | 'T3' | 'T4' | 'T5' | 'STOCK_MONTH' | 'STOCK_WEEK' | 'STOCK_DAY';
 type Importance = 'High' | 'Mid' | 'Low';
-
-interface TimeSlotConfig {
-  id: string;
-  timeRange: string;
-  name: string;
-  attribute: string;
-  rule: string;
-  startHour: number;
-  endHour: number;
-}
-
-const TIME_SLOTS: Record<string, TimeSlotConfig> = {
-  T1: { id: 'T1', timeRange: '05:00 - 09:00', name: 'Prime', attribute: '自己研鑽 / Jazz', rule: 'デジタルデトックス / 集中特化', startHour: 5, endHour: 9 },
-  T2: { id: 'T2', timeRange: '09:00 - 12:00', name: 'Business AM', attribute: '業務（高負荷）', rule: '私用デバイス封印', startHour: 9, endHour: 12 },
-  T3: { id: 'T3', timeRange: '12:00 - 13:00', name: 'Reset', attribute: '休憩 / 内省', rule: '業務連絡の完全遮断', startHour: 12, endHour: 13 },
-  T4: { id: 'T4', timeRange: '13:00 - 18:15', name: 'Business PM', attribute: '業務（調整・ルーチン）', rule: '18:15以降の残業禁止フラグ', startHour: 13, endHour: 18.25 },
-  T5: { id: 'T5', timeRange: '18:15 - 22:00', name: 'Private', attribute: '家族 / 翌日準備', rule: 'PCシャットダウン / 通知OFF', startHour: 18.25, endHour: 22 },
-};
-
-interface TaskCost {
-  estimated_time: number;
-  actual_time: number;
-}
-
-interface TaskQuality {
-  dod: string;
-  success_criteria: string;
-  actual_quality: number;
-}
-
-interface TaskRisk {
-  potential_issue: string;
-  mitigation: string;
-  is_manifested: boolean;
-}
-
-interface TaskEntity {
-  id: string;
-  scope_id: string;
-  title: string;
-  slot: TimeSlotID;
-  cost: TaskCost;
-  quality: TaskQuality;
-  risk: TaskRisk;
-  is_planned: boolean;
-  is_actual: boolean;
-  importance: Importance;
-  is_recovery: boolean;
-  deadline?: string;
-  goal_label?: string;
-  note?: string;
-}
-
-interface IfThenPlan {
-  id: string;
-  condition: string;
-  action: string;
-  category: string;
-}
-
-interface MoodRecord {
-  timestamp: string;
-  value: number;
-  emoji: string;
-}
 
 interface ProjectEntity {
   id: string;
   title: string;
   markdown: string;
+  deadline?: string;
+  status: 'active' | 'achieved' | 'shelved';
 }
+
+interface TaskEntity {
+  id: string; title: string; slot: TimeSlotID; cost: { estimated_time: number; actual_time: number; };
+  dod: string; is_planned: boolean; is_actual: boolean; importance: Importance;
+  is_recovery: boolean; deadline?: string; project_id?: string;
+}
+interface IfThenPlan { id: string; condition: string; action: string; category: string; }
+interface MoodRecord { timestamp: string; value: number; emoji: string; }
 
 interface AppState {
-  tasks: TaskEntity[];
-  ifThenPlans: IfThenPlan[];
-  moodHistory: MoodRecord[];
-  projects: ProjectEntity[];
-  selectedProjectId: string | null;
-  mindMapMarkdown: string;
-  memoGood: string;
-  memoImprove: string;
-  memoAnalysisMarkdown: string;
-  memoNextActions: string;
-  memoInsight: string;
+  tasks: TaskEntity[]; ifThenPlans: IfThenPlan[]; moodHistory: MoodRecord[];
+  projects: ProjectEntity[]; selectedProjectId: string | null;
+  memoGood: string; memoImprove: string; memoAnalysisMarkdown: string;
+  memoNextActions: string; memoInsight: string;
 }
 
-// --- Storage Manager ---
+interface TreeNode { uid: string; text: string; depth: number; is_task: boolean; is_achieved: boolean; children: TreeNode[]; x?: number; y?: number; }
+
+// --- 2. Infrastructure ---
 
 class ASMOSStorage {
-  private static STORAGE_KEY = 'ASMOS_STATE';
-
-  static loadState(): AppState {
-    const data = localStorage.getItem(this.STORAGE_KEY);
+  private static KEY = 'ASMOS_VUE_STATE_V7';
+  static load(): AppState {
+    const data = localStorage.getItem(this.KEY);
     if (data) {
-      try {
-        const state = JSON.parse(data);
-        if (!state.mindMapMarkdown) state.mindMapMarkdown = '# ASMOS Mind Map\n\n## 目的\n- 自己研鑽\n- 業務効率化\n\n## ステークホルダー\n- 家族\n- 同僚';
-        if (state.memoAnalysisMarkdown === undefined) state.memoAnalysisMarkdown = '# 問題分析（ロジックツリー）\n\n## 今日の課題\n- なぜ起きた？\n  - 原因A\n  - 原因B';
-        if (state.ifThenPlans === undefined) state.ifThenPlans = [];
-        if (state.moodHistory === undefined) state.moodHistory = [{ timestamp: new Date().toISOString(), value: 100, emoji: '🤩' }];
-        
-        // Project Migration
-        if (state.projects === undefined) {
-          state.projects = [{ id: 'default-project', title: 'メインプロジェクト', markdown: state.mindMapMarkdown || '# New Project' }];
-          state.selectedProjectId = 'default-project';
-        }
-        if (state.selectedProjectId === undefined) state.selectedProjectId = state.projects[0]?.id || null;
-
-        state.tasks = state.tasks.map((t: any) => {
-          if (t.importance === undefined) t.importance = 'Mid';
-          if (t.is_recovery === undefined) t.is_recovery = false;
-          if (t.goal_label === undefined) t.goal_label = '';
-          if (t.cost && t.cost.actual_time === undefined) t.cost.actual_time = 0;
-          return t;
-        });
-
-        return state;
-      } catch (e) {
-        console.error('Failed to parse ASMOS state:', e);
+      const state = JSON.parse(data);
+      if (state.projects) {
+        state.projects.forEach((p: any) => { if (p.status === undefined) p.status = 'active'; });
       }
+      return state;
     }
-    const defaultMarkdown = '# Default Project\n\n## 目的\n- 自己研鑽\n- 業務効率化';
+    const defaultMarkdown = '# 目標\n## [ ] 自己実現\n### 読書\n### 筋トレ\n## 業務効率化';
     return {
-      tasks: [],
-      ifThenPlans: [],
-      moodHistory: [{ timestamp: new Date().toISOString(), value: 100, emoji: '🤩' }],
-      projects: [{ id: 'default-project', title: 'メインプロジェクト', markdown: defaultMarkdown }],
-      selectedProjectId: 'default-project',
-      mindMapMarkdown: defaultMarkdown,
-      memoGood: '', memoImprove: '', 
-      memoAnalysisMarkdown: '# 問題分析\n\n## 今日の課題\n- なぜ起きた？',
+      tasks: [], ifThenPlans: [], moodHistory: [{ timestamp: new Date().toISOString(), value: 100, emoji: '🤩' }],
+      projects: [{ id: 'default', title: 'メインプロジェクト', markdown: defaultMarkdown, status: 'active' }],
+      selectedProjectId: 'default',
+      memoGood: '', memoImprove: '', memoAnalysisMarkdown: '# 問題分析\n## なぜ起きた？\n### 環境要因\n### 人的ミス',
       memoNextActions: '', memoInsight: ''
     };
   }
+  static save(state: AppState) { localStorage.setItem(this.KEY, JSON.stringify(state)); }
+}
 
-  static saveState(state: AppState) { localStorage.setItem(this.STORAGE_KEY, JSON.stringify(state)); }
-  
-  static exportState(state: AppState) {
-    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(state, null, 2));
-    const a = document.createElement('a');
-    a.setAttribute("href", dataStr);
-    a.setAttribute("download", `asmos_backup_${new Date().toISOString().split('T')[0]}.json`);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }
+class BiasEngine {
+  static adjustTime(min: number): number { return Math.ceil(min * 1.5); }
+}
 
-  static importState(file: File): Promise<AppState> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        try { resolve(JSON.parse(e.target?.result as string)); }
-        catch (err) { reject(err); }
+const TIME_SLOTS: Record<string, { name: string, range: string, start: number, end: number }> = {
+  T1: { name: 'Prime', range: '05:00-09:00', start: 5, end: 9 },
+  T2: { name: 'Business AM', range: '09:00-12:00', start: 9, end: 12 },
+  T3: { name: 'Reset', range: '12:00-13:00', start: 12, end: 13 },
+  T4: { name: 'Business PM', range: '13:00-18:15', start: 13, end: 18.25 },
+  T5: { name: 'Private', range: '18:15-22:00', start: 18.25, end: 22 },
+};
+
+// --- 3. Vue Application ---
+
+const { createApp, ref, reactive, computed, watch } = Vue;
+const { createVuetify } = Vuetify;
+
+const vuetify = createVuetify({
+  theme: { defaultTheme: 'dark', themes: { dark: { colors: { primary: '#58a6ff', success: '#238636', warning: '#d29922', error: '#da3633', background: '#0d1117', surface: '#161b22' } } } }
+});
+
+const RootComponent = {
+  setup() {
+    const rawState = ASMOSStorage.load();
+    const state = (reactive as any)(rawState) as AppState;
+    const activeTab = (ref as any)('dashboard');
+    const creationModal = (ref as any)(false);
+    const completionModal = (ref as any)(false);
+    const projectModal = (ref as any)(false);
+    const currentTask = (ref as any)(null);
+    const creationMode = (ref as any)('task');
+    const editingId = (ref as any)(null);
+    const editingProjectId = (ref as any)(null);
+
+    const formTask = (reactive as any)({ title: '', slot: 'STOCK_DAY', importance: 'Mid', project_id: '', deadline: '', est: 60, mode: 'normal', dod: '' });
+    const formIfThen = (reactive as any)({ condition: '', action: '', category: 'Habit' });
+    const formComplete = (reactive as any)({ mood: 0, actual_time: 0 });
+    const formProject = (reactive as any)({ title: '', deadline: '', status: 'active' });
+
+    watch(state, (newVal: AppState) => ASMOSStorage.save(newVal), { deep: true });
+
+    const currentProject = computed(() => state.projects.find(p => p.id === state.selectedProjectId));
+    const selectProject = (id: string) => { 
+      state.selectedProjectId = id;
+      try { new mojs.Shape({ shape: 'circle', radius: { 0: 50 }, stroke: '#58a6ff', strokeWidth: 2, fill: 'none', duration: 1000 }).play(); } catch (e) {}
+    };
+
+    const getRemainingDays = (deadline?: string) => {
+      if (!deadline) return null;
+      const diff = new Date(deadline).getTime() - new Date().setHours(0,0,0,0);
+      return Math.ceil(diff / (1000 * 60 * 60 * 24));
+    };
+
+    const openProjectModal = (project?: ProjectEntity) => {
+      editingProjectId.value = project ? project.id : null;
+      formProject.title = project ? project.title : '';
+      formProject.deadline = project ? project.deadline || '' : '';
+      formProject.status = project ? project.status : 'active';
+      projectModal.value = true;
+    };
+
+    const submitProject = () => {
+      if (!formProject.title) return alert('タイトルを入力してください');
+      if (editingProjectId.value) {
+        const p = state.projects.find(x => x.id === editingProjectId.value);
+        if (p) {
+          const wasActive = p.status !== 'achieved';
+          p.title = formProject.title; p.deadline = formProject.deadline; p.status = formProject.status;
+          if (wasActive && p.status === 'achieved') {
+            try { new mojs.Burst({ radius: { 0: 200 }, count: 20, children: { shape: 'polygon', fill: ['gold', 'white', 'cyan'], duration: 2000 } }).play(); } catch (e) {}
+          }
+        }
+      } else {
+        const newProj: ProjectEntity = { id: crypto.randomUUID(), title: formProject.title, markdown: `# ${formProject.title}\n\n## 目的\n- `, deadline: formProject.deadline, status: formProject.status };
+        state.projects.push(newProj); state.selectedProjectId = newProj.id;
+      }
+      projectModal.value = false;
+    };
+
+    const deleteProject = (id: string) => {
+      if (state.projects.length <= 1) return alert('最後のプロジェクトは削除できません');
+      if (!confirm('プロジェクトを削除しますか？')) return;
+      state.projects = state.projects.filter(p => p.id !== id);
+      if (state.selectedProjectId === id) state.selectedProjectId = state.projects[0].id;
+    };
+
+    const getTaskScore = (t: TaskEntity) => {
+      const imp = t.importance === 'High' ? 3 : (t.importance === 'Mid' ? 2 : 1);
+      let score = 0;
+      if (t.deadline) {
+        const [h, m] = t.deadline.split(':').map(Number);
+        const diff = (new Date().setHours(h, m) - Date.now()) / 60000;
+        score += imp * (diff < 0 ? 100 : (diff > 180 ? 10 : Math.floor(100 - (diff/180)*100)));
+      }
+      const proj = state.projects.find(p => p.id === t.project_id);
+      if (proj && proj.deadline) {
+        const days = getRemainingDays(proj.deadline);
+        if (days !== null) { if (days <= 0) score += 500; else if (days <= 3) score += 300; else if (days <= 7) score += 100; }
+      }
+      return score;
+    };
+
+    // --- Mind Map & Task Sync ---
+
+    const parseMarkdownToTree = (md: string): TreeNode | null => {
+      const lines = md.split('\n').filter(l => l.trim().startsWith('#'));
+      if (lines.length === 0) return null;
+      const processLine = (line: string): { text: string, is_task: boolean, is_achieved: boolean } => {
+        const rawText = line.replace(/^#+\s*/, '');
+        const is_achieved = /\[\s*[xX]\s*\]/.test(rawText);
+        const is_task = /\[\s* \s*\]/.test(rawText) || is_achieved;
+        const cleanText = rawText.replace(/\[\s*[ xX]*\s*\]\s*/, '');
+        return { text: cleanText, is_task, is_achieved };
       };
-      reader.readAsText(file);
-    });
-  }
-}
+      const rootData = processLine(lines[0]);
+      const root: TreeNode = { uid: 'root', text: rootData.text, is_task: rootData.is_task, is_achieved: rootData.is_achieved, depth: 1, children: [] };
+      const stack: TreeNode[] = [root];
+      for (let i = 1; i < lines.length; i++) {
+        const data = processLine(lines[i]);
+        const depth = (lines[i].match(/^#+/) || ['#'])[0].length;
+        const node: TreeNode = { uid: 'node-' + i + '-' + data.text.substring(0, 5), text: data.text, is_task: data.is_task, is_achieved: data.is_achieved, depth, children: [] };
+        while (stack.length > 0 && stack[stack.length - 1].depth >= depth) stack.pop();
+        if (stack.length > 0) stack[stack.length - 1].children.push(node);
+        stack.push(node);
+      }
+      return root;
+    };
 
-// --- Application Controller ---
+    const syncTasksFromGoals = (tree: TreeNode | null) => {
+      if (!tree || !state.selectedProjectId) return;
+      const traverse = (node: TreeNode) => {
+        if (node.is_task) {
+          let t = state.tasks.find(x => x.title === node.text && x.project_id === state.selectedProjectId);
+          if (!t) {
+            t = { id: crypto.randomUUID(), title: node.text, slot: 'STOCK_DAY', project_id: state.selectedProjectId || undefined, is_planned: false, is_actual: node.is_achieved, importance: 'Mid', is_recovery: false, cost: { estimated_time: 60, actual_time: 0 }, dod: 'From Strategy' };
+            state.tasks.push(t);
+          } else {
+            if (node.is_achieved && !t.is_actual) { t.is_actual = true; t.cost.actual_time = BiasEngine.adjustTime(t.cost.estimated_time); }
+            else if (!node.is_achieved && t.is_actual) { t.is_actual = false; t.cost.actual_time = 0; }
+          }
+        }
+        node.children.forEach(traverse);
+      };
+      traverse(tree);
+    };
 
-class ASMOSApp {
-  private state: AppState;
-  private currentTaskIdForModal: string | null = null;
-  private editingTaskId: string | null = null;
-  private editingIfThenId: string | null = null;
-  private mmGoal: any = null;
-  private mmAnalysis: any = null;
-  private creationMode: 'task' | 'ifthen' = 'task';
-  private currentTargetSlot: TimeSlotID = 'STOCK_DAY';
-  private currentTargetColumn: 'plan' | 'actual' | 'stock' = 'stock';
+    const cycleNodeState = (node: any) => {
+      const proj = currentProject.value; if (!proj) return;
+      const lines = proj.markdown.split('\n');
+      const idx = lines.findIndex((l: string) => l.includes(node.text));
+      if (idx !== -1) {
+        const headerMatch = lines[idx].match(/^(#+)\s*/);
+        const header = headerMatch ? headerMatch[0] : '# ';
+        if (lines[idx].includes('[x]') || lines[idx].includes('[X]')) { lines[idx] = lines[idx].replace(/\[\s*[xX]\s*\]\s*/, ''); }
+        else if (lines[idx].includes('[ ]')) { lines[idx] = lines[idx].replace('[ ]', '[x]'); }
+        else { lines[idx] = lines[idx].replace(header, header + '[ ] '); }
+        proj.markdown = lines.join('\n'); ASMOSStorage.save(state);
+      }
+    };
 
-  constructor() {
-    this.state = ASMOSStorage.loadState();
-    this.initUI();
-    this.initNavigation();
-    this.initDragAndDrop();
-    this.startClock();
-    this.render();
-  }
+    const getTreeHeight = (node: TreeNode): number => {
+      if (node.children.length === 0) return 40; 
+      return node.children.reduce((acc, child) => acc + getTreeHeight(child), 0);
+    };
 
-  private startClock() {
-    setInterval(() => {
-      this.updateTimeIndicator();
-      this.render();
-    }, 60000);
-  }
+    const calculateTreeLayout = (node: TreeNode, x: number, yStart: number): { yEnd: number } => {
+      node.x = x;
+      if (node.children.length === 0) { node.y = yStart + 20; return { yEnd: yStart + 40 }; }
+      let currentY = yStart;
+      node.children.forEach(child => { const res = calculateTreeLayout(child, x + 240, currentY); currentY = res.yEnd; });
+      const firstChildY = node.children[0].y || 0;
+      const lastChildY = node.children[node.children.length - 1].y || 0;
+      node.y = (firstChildY + lastChildY) / 2;
+      return { yEnd: currentY };
+    };
 
-  private initUI() {
-    const appDiv = document.getElementById('app');
-    if (!appDiv) return;
-
-    appDiv.innerHTML = `
-      <!-- View 1: Integrated Dashboard -->
-      <div id="dashboard-view" class="app-view">
-        <header class="view-header">
-          <h1>📊 統合ダッシュボード</h1>
-          <div class="hp-container standard-panel" style="padding: 10px 20px; display: flex; align-items: center; gap: 15px;">
-            <span class="hp-status" id="current-mood-status">Status: ${this.state.moodHistory[this.state.moodHistory.length - 1]?.emoji || '🤩'}</span>
-            <span class="hp-status">Vitals Score: <span id="dash-hp-value">100</span></span>
-          </div>
-        </header>
-        <div class="view-body">
-          <div class="dashboard-container">
-            <div class="summary-grid">
-              <div class="summary-card standard-panel" style="grid-column: 1 / -1; height: 250px;">
-                <h3>📈 Vital & Mood Trend</h3>
-                <div id="mood-chart-dash" style="width: 100%; height: 180px;"></div>
-              </div>
-              <div class="summary-card standard-panel"><h3>📅 予定時間</h3><div class="value" id="dash-planned-time">0 min</div><div class="label">Planned Effort (adj)</div></div>
-              <div class="summary-card success standard-panel"><h3>⚡ 実測時間</h3><div class="value" id="dash-actual-time">0 min</div><div class="label">Total Actual Consumption</div></div>
-              <div class="summary-card warning standard-panel"><h3>📝 残タスク数</h3><div class="value" id="dash-remaining-tasks">0</div><div class="label">Unfinished Plans</div></div>
-            </div>
-            <div class="dashboard-controls">
-              <button id="export-btn-dash" class="btn">💾 データ一括出力 (JSON)</button>
-              <button id="import-btn-dash" class="btn">📂 データ読込</button>
-              <input type="file" id="import-file-dash" style="display:none" accept=".json">
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- View 2: Goal Management -->
-      <div id="mindmap-view" class="app-view" style="display:none">
-        <header class="view-header"><h1>🎯 目的管理 (Goal Management)</h1></header>
-        <div class="view-body" style="padding: 0;">
-          <div class="mindmap-container expanded">
-            <div class="project-sidebar">
-              <button id="add-project-btn" class="btn primary">+ 新規プロジェクト</button>
-              <div id="project-list" style="margin-top: 15px;"></div>
-            </div>
-            <div class="mindmap-editor slim">
-              <div class="mm-editor-header"><h3>✍️ エディタ</h3><div class="mm-controls"><button id="mm-download-btn" class="btn subtle">⬇️</button><button id="mm-upload-btn" class="btn subtle">⬆️</button><input type="file" id="mm-import-file" style="display:none" accept=".md"></div></div>
-              <textarea id="mm-textarea" spellcheck="false"></textarea>
-            </div>
-            <div class="mindmap-visualizer full"><svg id="markmap-svg-goal"></svg></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- View 3: If-Then Planning -->
-      <div id="ifthen-view" class="app-view" style="display:none">
-        <header class="view-header"><h1>💡 if-thenプランニング</h1><div class="controls"><button id="add-ifthen-btn" class="btn primary">+ 新規プラン追加</button></div></header>
-        <div class="view-body"><div class="dashboard-container"><div id="ifthen-list"></div></div></div>
-      </div>
-
-      <!-- View 4: Execution -->
-      <div id="timezone-view" class="app-view" style="display:none">
-        <div class="timezone-layout">
-          <aside class="stock-sidebar hierarchical">
-            <div class="sidebar-header main"><h3>📦 タスク・ストック</h3></div>
-            <section class="stock-level month"><div class="level-header"><span>🗓️ 月間</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_MONTH', 'stock')">+</button></div><div id="tasks-stock-month" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_MONTH" data-column="stock"></div></section>
-            <section class="stock-level week"><div class="level-header"><span>📅 週間</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_WEEK', 'stock')">+</button></div><div id="tasks-stock-week" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_WEEK" data-column="stock"></div></section>
-            <section class="stock-level day today"><div class="level-header"><span>🚀 本日</span><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('STOCK_DAY', 'stock')">+</button></div><div id="tasks-stock-day" class="slot-column stock" ondragover="event.preventDefault()" data-slot="STOCK_DAY" data-column="stock"></div></section>
-          </aside>
-          <main class="timeline-main">
-            <header class="view-header"><h1>⏳ 実行管理</h1><div class="controls"><button id="auto-schedule-btn" class="btn warning">⚡ 自動スケジューリング</button><button id="add-task-btn" class="btn primary">+ 新規タスク</button></div></header>
-            <div class="view-body" style="padding: 0; position: relative;">
-              <div id="time-indicator"><span>NOW</span></div>
-              <div class="time-slots-container">
-                <div class="timeline-headers"><div class="header-time">時間枠</div><div class="header-plan">🗓️ 計画 (Plan)</div><div class="header-actual">✅ 実行 (Actual)</div></div>
-                ${Object.keys(TIME_SLOTS).map(slotId => `<div class="time-slot" id="slot-${slotId}"><div class="slot-header"><span class="slot-id">${slotId}</span><span class="slot-name">${TIME_SLOTS[slotId].name}</span><span class="slot-time">${TIME_SLOTS[slotId].timeRange}</span></div><div class="slot-column plan" id="tasks-plan-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="plan"><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'plan')">+</button></div><div class="slot-column actual" id="tasks-actual-${slotId}" ondragover="event.preventDefault()" data-slot="${slotId}" data-column="actual"><button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'actual')">+</button></div></div>`).join('')}
-              </div>
-            </div>
-          </main>
-        </div>
-      </div>
-
-      <!-- View 5: Reflection -->
-      <div id="reflection-view" class="app-view" style="display:none">
-        <header class="view-header"><h1>🧠 内省とアクション (Review)</h1><button id="download-review-btn" class="btn primary">📄 レポート出力</button></header>
-        <div class="view-body">
-          <div class="memo-container enhanced">
-            <div class="analysis-workflow">
-              <section class="analysis-section">
-                <div class="section-label">事実 (Fact)</div>
-                <div class="box-header"><span class="icon">🔍</span><h3>本日の実績とタスクログ</h3></div>
-                <div class="memo-section fact-summary-box standard-panel">
-                  <div id="fact-summary" class="summary-text">算出中...</div>
-                  <div style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 15px;">
-                    <h4 style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 10px;">📉 Vital Variation Analysis</h4>
-                    <div id="mood-chart-review" style="width: 100%; height: 150px;"></div>
-                  </div>
-                  <div class="fact-sub-label" style="margin-top: 20px; border-top: 1px solid var(--border-color); padding-top: 15px; font-size: 0.8rem; color: var(--text-secondary);">完了タスクの振り返りメモ:</div>
-                  <div id="fact-task-logs" class="task-log-list" style="margin-top: 10px;"></div>
-                </div>
-              </section>
-              <section class="analysis-section"><div class="section-label">状況整理 (Context)</div><div class="memo-grid-horizontal"><div class="memo-section-box good standard-panel"><div class="box-header"><span class="icon">✅</span><h4>成功要因 (Good)</h4></div><textarea id="memo-good">${this.state.memoGood}</textarea></div><div class="memo-section-box improve standard-panel"><div class="box-header"><span class="icon">🛠️</span><h4>改善メモ (Improvement)</h4></div><textarea id="memo-improve">${this.state.memoImprove}</textarea></div></div></section>
-              <section class="analysis-section"><div class="section-label">論理分解 (Why)</div><div class="box-header"><span class="icon">🌳</span><h3>問題分析ロジックツリー</h3></div><div class="analysis-tree-container"><textarea id="memo-analysis-markdown" class="standard-panel">${this.state.memoAnalysisMarkdown}</textarea><div class="analysis-visualizer standard-panel"><svg id="markmap-svg-analysis"></svg></div></div></section>
-              <section class="analysis-section insight-focus"><div class="section-label">本質的な解釈 (Insight)</div><div class="box-header"><span class="icon">💡</span><h3>The Core Insight</h3></div><textarea id="memo-insight" placeholder="本質的な学びを一言で">${this.state.memoInsight}</textarea></section>
-              <section class="analysis-section action-focus"><div class="section-label">判断 (Judgment)</div><div class="box-header"><span class="icon">🚀</span><h3>明日へのアクションプラン</h3></div><div class="memo-section action-section standard-panel"><textarea id="memo-next-actions">${this.state.memoNextActions}</textarea></div></section>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Modals -->
-      <div id="creation-modal" class="modal-overlay" style="display:none">
-        <div class="modal-content large">
-          <nav class="modal-tabs"><button id="tab-task" class="active">✨ タスク設定</button><button id="tab-ifthen">💡 if-then設定</button></nav>
-          <div id="form-task" class="modal-tab-content">
-            <div class="input-grid">
-              <div class="input-group"><label>タスク名</label><input type="text" id="task-title"></div>
-              <div class="input-group"><label>スロット</label><select id="task-slot"><option value="STOCK_MONTH">🗓️ 月間ストック</option><option value="STOCK_WEEK">📅 週間ストック</option><option value="STOCK_DAY">🚀 本日ストック</option>${Object.keys(TIME_SLOTS).map(id => `<option value="${id}">${id} - ${TIME_SLOTS[id].name}</option>`).join('')}</select></div>
-              <div class="input-group"><label>重要度</label><select id="task-importance"><option value="High">🔴 高</option><option value="Mid" selected>🟡 中</option><option value="Low">🔵 低</option></select></div>
-              <div class="input-group"><label>プロジェクト</label><select id="task-project-id"><option value="">(なし)</option></select></div>
-              <div class="input-group"><label>締め切り時刻</label><input type="time" id="task-deadline"></div>
-              <div class="input-group"><label>見積時間 (分)</label><input type="number" id="task-estimated" value="60"></div>
-              <div class="input-group"><label>モード</label><select id="task-mode"><option value="normal">⚡ 消費</option><option value="recovery">🌿 回復</option></select></div>
-            </div>
-            <div class="input-group"><label>完了定義 (DoD) <span style="color: var(--danger-color); font-weight: bold;">(必須)</span></label><textarea id="task-dod" placeholder="例: 報告書のドラフトを受領確認まで"></textarea></div>
-          </div>
-          <div id="form-ifthen" class="modal-tab-content" style="display:none"><div class="input-grid"><div class="input-group"><label>もし〜なら (Condition)</label><input type="text" id="ifthen-condition" placeholder="例: 18:15になったら"></div><div class="input-group"><label>そのとき〜する (Action)</label><input type="text" id="ifthen-action" placeholder="例: PCをシャットダウン"></div><div class="input-group"><label>カテゴリ</label><select id="ifthen-category"><option value="Habit">🏃 習慣</option><option value="Risk">🛡️ リスク回避</option><option value="Work">💼 業務</option></select></div></div></div>
-          <div class="modal-controls"><button id="creation-delete" class="btn danger" style="display:none; margin-right: auto;">🗑️ 削除</button><button id="creation-cancel" class="btn">キャンセル</button><button id="creation-submit" class="btn primary">保存</button></div>
-        </div>
-      </div>
-
-      <div id="completion-modal" class="modal-overlay" style="display:none">
-        <div class="modal-content">
-          <div class="box-header"><span class="icon">🏁</span><h2>実績記録</h2></div>
-          <div class="input-group"><label>今の気分・状態</label><div class="rating-group" id="mood-rating"><button data-value="-100" class="btn">😫</button><button data-value="-50" class="btn">😩</button><button data-value="0" class="btn">😐</button><button data-value="50" class="btn">😊</button><button data-value="100" class="btn">🤩</button></div></div>
-          <div class="input-group"><label>品質評価</label><div class="rating-group" id="quality-rating"><button data-value="1" class="btn">Low</button><button data-value="2" class="btn">Mid</button><button data-value="3" class="btn">High</button></div></div>
-          <div class="input-group"><label>実際にかかった時間 (分)</label><input type="number" id="completion-actual-time" value="60"></div>
-          <div class="input-group"><label><input type="checkbox" id="risk-check"> リスク顕在化</label></div>
-          <div class="input-group"><label>内省ノート</label><textarea id="completion-note"></textarea></div>
-          <div class="modal-controls"><button id="modal-cancel" class="btn">キャンセル</button><button id="modal-submit" class="btn primary">実績保存</button></div>
-        </div>
-      </div>
-    `;
-
-    this.bindEvents();
-  }
-
-  private bindEvents() {
-    document.getElementById('add-task-btn')?.addEventListener('click', () => this.handleAddTask());
-    document.getElementById('auto-schedule-btn')?.addEventListener('click', () => this.autoScheduleTasks());
-    document.getElementById('export-btn-dash')?.addEventListener('click', () => ASMOSStorage.exportState(this.state));
-    document.getElementById('import-btn-dash')?.addEventListener('click', () => (document.getElementById('import-file-dash') as HTMLInputElement).click());
-    document.getElementById('import-file-dash')?.addEventListener('change', async (e) => {
-      const f = (e.target as HTMLInputElement).files?.[0];
-      if (f) { try { this.state = await ASMOSStorage.importState(f); ASMOSStorage.saveState(this.state); this.render(); } catch (err) { alert('失敗'); } }
+    const mindMapData = computed(() => {
+      const md = currentProject.value?.markdown || '# No Strategy';
+      const tree = parseMarkdownToTree(md);
+      if (!tree) return { nodes: [], links: [] };
+      syncTasksFromGoals(tree); calculateTreeLayout(tree, 60, 60); 
+      const nodes: any[] = []; const links: any[] = [];
+      const traverse = (n: TreeNode) => {
+        nodes.push({ id: n.uid, x: n.x, y: n.y, text: n.text, is_task: n.is_task, is_achieved: n.is_achieved });
+        n.children.forEach(c => { links.push({ id: n.uid + '-' + c.uid, x1: n.x, y1: n.y, x2: c.x, y2: c.y }); traverse(c); });
+      };
+      traverse(tree); return { nodes, links };
     });
 
-    document.getElementById('modal-cancel')?.addEventListener('click', () => this.closeModal('completion-modal'));
-    document.getElementById('modal-submit')?.addEventListener('click', () => this.handleModalSubmit());
-    document.getElementById('creation-cancel')?.addEventListener('click', () => this.closeModal('creation-modal'));
-    document.getElementById('creation-submit')?.addEventListener('click', () => this.handleCreationSubmit());
-    document.getElementById('creation-delete')?.addEventListener('click', () => this.handleDeleteEntry());
-    document.getElementById('tab-task')?.addEventListener('click', () => this.switchCreationTab('task'));
-    document.getElementById('tab-ifthen')?.addEventListener('click', () => this.switchCreationTab('ifthen'));
-    document.getElementById('add-ifthen-btn')?.addEventListener('click', () => this.handleAddIfThen());
-    document.getElementById('download-review-btn')?.addEventListener('click', () => this.downloadDailyReview());
+    const moodChartPath = computed(() => {
+      if (state.moodHistory.length < 2) return '';
+      const w = 800, h = 150;
+      return state.moodHistory.map((d: any, i: number) => `${i === 0 ? 'M' : 'L'} ${(i / (state.moodHistory.length - 1)) * w} ${((100 - d.value) / 200) * h}`).join(' ');
+    });
 
-    ['memo-good', 'memo-improve', 'memo-insight', 'memo-next-actions'].forEach(id => {
-      document.getElementById(id)?.addEventListener('input', (e) => {
-        (this.state as any)[id.replace('memo-', 'memo')] = (e.target as HTMLTextAreaElement).value;
-        ASMOSStorage.saveState(this.state);
+    const autoSchedule = () => {
+      const stock = state.tasks.filter(t => t.slot === 'STOCK_DAY' && !t.is_actual);
+      stock.sort((a, b) => getTaskScore(b) - getTaskScore(a));
+      const caps: any = {};
+      Object.keys(TIME_SLOTS).forEach(id => caps[id] = (TIME_SLOTS[id].end - TIME_SLOTS[id].start) * 60 * 0.8 - state.tasks.filter(t => t.slot === id && t.is_planned).reduce((s, t) => s + BiasEngine.adjustTime(t.cost.estimated_time), 0));
+      stock.forEach(t => {
+        const adj = BiasEngine.adjustTime(t.cost.estimated_time);
+        for (const id of Object.keys(TIME_SLOTS)) { if (caps[id] >= adj) { t.slot = id as any; t.is_planned = true; caps[id] -= adj; break; } }
       });
-    });
-    document.getElementById('memo-analysis-markdown')?.addEventListener('input', (e) => {
-      this.state.memoAnalysisMarkdown = (e.target as HTMLTextAreaElement).value;
-      ASMOSStorage.saveState(this.state);
-      this.updateMindMap('analysis');
-    });
+    };
 
-    this.setupRatingButtons('mood-rating');
-    this.setupRatingButtons('quality-rating');
+    const openCreation = (mode: 'task' | 'ifthen', entity?: any) => {
+      creationMode.value = mode; editingId.value = entity ? entity.id : null;
+      if (mode === 'task') Object.assign(formTask, entity ? { ...entity, est: entity.cost.estimated_time } : { title: '', slot: 'STOCK_DAY', importance: 'Mid', project_id: state.selectedProjectId || '', deadline: '', est: 60, mode: 'normal', dod: '' });
+      else Object.assign(formIfThen, entity ? { ...entity } : { condition: '', action: '', category: 'Habit' });
+      creationModal.value = true;
+    };
 
-    document.getElementById('mm-textarea')?.addEventListener('input', (e) => {
-      const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
-      if (proj) {
-        proj.markdown = (e.target as HTMLTextAreaElement).value;
-        ASMOSStorage.saveState(this.state);
-        this.updateMindMap('goal');
+    const submitCreation = () => {
+      if (creationMode.value === 'task') {
+        if (!formTask.dod) return alert('DoDは必須です');
+        const data: TaskEntity = { id: editingId.value || crypto.randomUUID(), title: formTask.title, slot: formTask.slot as TimeSlotID, importance: formTask.importance as Importance, project_id: formTask.project_id, deadline: formTask.deadline, is_recovery: formTask.mode === 'recovery', cost: { estimated_time: formTask.est, actual_time: 0 }, dod: formTask.dod, is_planned: !formTask.slot.startsWith('STOCK'), is_actual: false };
+        if (editingId.value) { const idx = state.tasks.findIndex(t => t.id === editingId.value); if (idx !== -1) state.tasks[idx] = data; } else state.tasks.push(data);
+      } else {
+        const data: IfThenPlan = { id: editingId.value || crypto.randomUUID(), ...formIfThen };
+        if (editingId.value) { const idx = state.ifThenPlans.findIndex(p => p.id === editingId.value); if (idx !== -1) state.ifThenPlans[idx] = data; } else state.ifThenPlans.push(data);
       }
-    });
-    document.getElementById('mm-download-btn')?.addEventListener('click', () => this.downloadMindMap());
-    document.getElementById('mm-upload-btn')?.addEventListener('click', () => (document.getElementById('mm-import-file') as HTMLInputElement).click());
-    document.getElementById('mm-import-file')?.addEventListener('change', (e) => this.handleMindMapUpload(e));
-    document.getElementById('add-project-btn')?.addEventListener('click', () => this.addProject());
-  }
+      creationModal.value = false;
+    };
 
-  private renderProjects() {
-    const list = document.getElementById('project-list');
-    if (!list) return;
-    list.innerHTML = this.state.projects.map(p => `
-      <div class="project-item ${p.id === this.state.selectedProjectId ? 'active' : ''}" onclick="window.app.selectProject('${p.id}')">
-        <span>${p.title}</span>
-        <button class="delete-btn btn subtle" onclick="event.stopPropagation(); window.app.deleteProject('${p.id}')">🗑️</button>
+    const toggleComplete = (task: TaskEntity) => {
+      if (task.is_actual) { task.is_actual = false; task.cost.actual_time = 0; }
+      else { currentTask.value = task; formComplete.mood = 0; formComplete.actual_time = BiasEngine.adjustTime(task.cost.estimated_time); completionModal.value = true; }
+    };
+
+    const submitCompletion = () => {
+      const t = currentTask.value; if (!t) return;
+      t.is_actual = true; t.cost.actual_time = formComplete.actual_time;
+      const emojiMap: any = { '-100': '😫', '-50': '😩', '0': '😐', '50': '😊', '100': '🤩' };
+      state.moodHistory.push({ timestamp: new Date().toISOString(), value: formComplete.mood, emoji: emojiMap[formComplete.mood.toString()] || '😐' });
+      try { new mojs.Burst({ radius: { 0: 100 }, count: 10, children: { shape: 'circle', fill: 'cyan', duration: 1500 } }).play(); } catch (e) {}
+      completionModal.value = false;
+    };
+
+    const downloadCurrentProject = () => {
+      const proj = currentProject.value; if (!proj) return;
+      const blob = new Blob([proj.markdown], { type: 'text/markdown' });
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `${proj.title}.md`; a.click();
+    };
+
+    const triggerUpload = () => { document.getElementById('project-upload-input')?.click(); };
+    const handleProjectUpload = (e: any) => {
+      const file = e.target.files[0]; if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (event: any) => { if (currentProject.value) { currentProject.value.markdown = event.target.result; alert('アップロード完了'); } };
+      reader.readAsText(file);
+    };
+
+    const deleteEntry = () => {
+      if (creationMode.value === 'task') state.tasks = state.tasks.filter(t => t.id !== editingId.value);
+      else state.ifThenPlans = state.ifThenPlans.filter(p => p.id !== editingId.value);
+      creationModal.value = false;
+    };
+
+    return {
+      state, activeTab, creationModal, completionModal, projectModal, currentTask, creationMode, editingId, editingProjectId,
+      formTask, formIfThen, formComplete, formProject, TIME_SLOTS, moodChartPath, mindMapData,
+      selectProject, currentProject, autoSchedule, openCreation, submitCreation, toggleComplete, submitCompletion, 
+      openProjectModal, submitProject, deleteProject, downloadCurrentProject, triggerUpload, handleProjectUpload, getRemainingDays, deleteEntry,
+      cycleNodeState, BiasEngine
+    };
+  },
+  template: `
+<v-app>
+  <v-navigation-drawer permanent rail expand-on-hover border="0">
+    <v-list nav>
+      <v-list-item prepend-icon="mdi-view-dashboard" title="Dashboard" @click="activeTab = 'dashboard'"></v-list-item>
+      <v-list-item prepend-icon="mdi-target" title="Goals" @click="activeTab = 'goals'"></v-list-item>
+      <v-list-item prepend-icon="mdi-lightbulb-on" title="If-Then" @click="activeTab = 'ifthen'"></v-list-item>
+      <v-list-item prepend-icon="mdi-calendar-clock" title="Schedule" @click="activeTab = 'schedule'"></v-list-item>
+      <v-list-item prepend-icon="mdi-brain" title="Review" @click="activeTab = 'review'"></v-list-item>
+    </v-list>
+  </v-navigation-drawer>
+
+  <v-main>
+    <v-container fluid v-if="activeTab === 'dashboard'" class="pa-6">
+      <v-card class="pa-4 mb-6">
+        <div class="text-h6 mb-2">📈 Vital Trend ({{ state.moodHistory[state.moodHistory.length-1]?.emoji }})</div>
+        <div style="height: 150px; width: 100%;">
+          <svg viewBox="0 0 800 150" preserveAspectRatio="none" style="width:100%; height:100%">
+            <line x1="0" x2="800" y1="75" y2="75" style="stroke:#30363d; stroke-dasharray:4"></line>
+            <path :d="moodChartPath" style="fill:none; stroke:#58a6ff; stroke-width:2"></path>
+            <g v-for="(d, i) in state.moodHistory" :key="i">
+              <circle :cx="(i / (state.moodHistory.length-1)) * 800" :cy="((100 - d.value) / 200) * 150" r="4" fill="#58a6ff"></circle>
+            </g>
+          </svg>
+        </div>
+      </v-card>
+      <v-row>
+        <v-col cols="4"><v-card class="pa-4 text-center"><div>PLANNED (adj)</div><div class="text-h4">{{ state.tasks.filter(t=>t.is_planned).reduce((s,t)=>s+BiasEngine.adjustTime(t.cost.estimated_time),0) }}m</div></v-card></v-col>
+        <v-col cols="4"><v-card class="pa-4 text-center"><div>ACTUAL</div><div class="text-h4 text-success">{{ state.tasks.filter(t=>t.is_actual).reduce((s,t)=>s+t.cost.actual_time,0) }}m</div></v-card></v-col>
+        <v-col cols="4"><v-card class="pa-4 text-center"><div>REMAINING</div><div class="text-h4 text-warning">{{ state.tasks.filter(t=>t.is_planned && !t.is_actual).length }}</div></v-card></v-col>
+      </v-row>
+    </v-container>
+
+    <v-container fluid v-if="activeTab === 'goals'" class="fill-height pa-0">
+      <div class="d-flex fill-height" style="width:100%">
+        <div class="project-sidebar" style="width:240px">
+          <v-btn block color="primary" @click="openProjectModal()">+ 新規</v-btn>
+          <v-list bg-color="transparent" class="mt-4">
+            <v-list-item v-for="p in state.projects" :key="p.id" :active="state.selectedProjectId === p.id" @click="selectProject(p.id)"
+                         :style="{opacity: p.status === 'active' ? 1 : 0.6}">
+              <v-list-item-title :style="{textDecoration: p.status === 'achieved' ? 'line-through' : 'none'}">
+                <v-icon size="small" class="mr-1" :color="p.status === 'achieved' ? 'success' : (p.status === 'shelved' ? 'warning' : 'primary')">
+                  {{ p.status === 'achieved' ? 'mdi-check-circle' : (p.status === 'shelved' ? 'mdi-pause-circle' : 'mdi-play-circle') }}
+                </v-icon>
+                {{ p.title }}
+              </v-list-item-title>
+              <v-list-item-subtitle v-if="p.deadline" class="text-caption ml-7">
+                {{ getRemainingDays(p.deadline) !== null ? (getRemainingDays(p.deadline) <= 0 ? '❗ 期限超過' : '⏳ あと ' + getRemainingDays(p.deadline) + ' 日') : '' }}
+              </v-list-item-subtitle>
+              <template v-slot:append>
+                <v-btn icon="mdi-cog" variant="text" size="x-small" @click.stop="openProjectModal(p)"></v-btn>
+                <v-btn icon="mdi-delete" variant="text" size="x-small" color="error" @click.stop="deleteProject(p.id)"></v-btn>
+              </template>
+            </v-list-item>
+          </v-list>
+        </div>
+        <div class="d-flex flex-grow-1" style="height: 100%">
+          <div style="width: 300px; height: 100%;" class="pa-2 d-flex flex-column">
+            <div class="d-flex mb-2">
+              <v-btn icon="mdi-download" variant="text" size="small" @click="downloadCurrentProject"></v-btn>
+              <v-btn icon="mdi-upload" variant="text" size="small" @click="triggerUpload"></v-btn>
+              <input type="file" id="project-upload-input" style="display:none" accept=".md" @change="handleProjectUpload">
+            </div>
+            <textarea v-if="currentProject" v-model="currentProject.markdown" class="asmos-editor flex-grow-1" spellcheck="false"></textarea>
+          </div>
+          <div class="flex-grow-1" style="background: #010409; overflow: auto; position: relative;">
+            <svg class="mindmap-svg" style="min-width: 2000px; min-height: 1000px;">
+              <g v-for="l in mindMapData.links" :key="l.id">
+                <path class="mindmap-link" :d="'M ' + l.x1 + ' ' + l.y1 + ' C ' + (l.x1 + 100) + ' ' + l.y1 + ' ' + (l.x2 - 100) + ' ' + l.y2 + ' ' + l.x2 + ' ' + l.y2" 
+                      fill="none" stroke="#58a6ff" stroke-width="1.5" opacity="0.4"></path>
+              </g>
+              <g v-for="n in mindMapData.nodes" :key="n.id" class="mindmap-node" :class="{ 'is-task': n.is_task }" 
+                 :transform="'translate('+n.x+','+n.y+')'" @dblclick="cycleNodeState(n)">
+                <circle r="6" :fill="n.is_achieved ? '#8b949e' : (n.is_task ? '#238636' : '#161b22')" stroke="#58a6ff" stroke-width="2" :opacity="n.is_achieved ? 0.5 : 1"></circle>
+                <text x="12" y="5" :fill="n.is_achieved ? '#8b949e' : '#c9d1d9'" 
+                      :style="{fontSize: '14px', fontWeight: 600, textShadow: '0 0 5px #000', textDecoration: n.is_achieved ? 'line-through' : 'none', opacity: n.is_achieved ? 0.5 : 1}">{{n.text}}</text>
+              </g>
+            </svg>
+          </div>
+        </div>
       </div>
-    `).join('');
-  }
+    </v-container>
 
-  public addProject() {
-    const title = prompt('プロジェクト名を入力してください');
-    if (!title) return;
-    const newProject: ProjectEntity = { id: crypto.randomUUID(), title: title, markdown: `# ${title}\n\n## 目的\n- ` };
-    this.state.projects.push(newProject);
-    this.state.selectedProjectId = newProject.id;
-    ASMOSStorage.saveState(this.state);
-    this.renderProjects();
-    this.updateMindMap('goal');
-  }
+    <v-container fluid v-if="activeTab === 'ifthen'" class="pa-6">
+      <div class="d-flex justify-space-between mb-6"><h1>💡 if-then</h1><v-btn color="primary" @click="openCreation('ifthen')">追加</v-btn></div>
+      <v-row><v-col v-for="p in state.ifThenPlans" :key="p.id" cols="4"><v-card class="pa-4" @click="openCreation('ifthen', p)"><div class="text-overline">{{p.category}}</div><div class="text-secondary">If: {{p.condition}}</div><div class="text-h6">Then: {{p.action}}</div></v-card></v-col></v-row>
+    </v-container>
 
-  public deleteProject(id: string) {
-    if (this.state.projects.length <= 1) return alert('最後のプロジェクトは削除できません');
-    if (!confirm('プロジェクトを削除しますか？')) return;
-    this.state.projects = this.state.projects.filter(p => p.id !== id);
-    if (this.state.selectedProjectId === id) this.state.selectedProjectId = this.state.projects[0].id;
-    ASMOSStorage.saveState(this.state);
-    this.renderProjects();
-    this.updateMindMap('goal');
-  }
+    <v-container fluid v-if="activeTab === 'schedule'" class="pa-0 fill-height">
+      <div class="d-flex fill-height" style="width:100%">
+        <div class="project-sidebar" style="width:300px">
+          <div class="pa-4 text-h6">📦 STOCK</div>
+          <task-card v-for="t in state.tasks.filter(x=>x.slot==='STOCK_DAY')" :key="t.id" :task="t" :projects="state.projects" @edit="openCreation('task', t)" @toggle="toggleComplete"></task-card>
+        </div>
+        <div class="flex-grow-1 pa-4 overflow-y-auto">
+          <div class="d-flex justify-space-between mb-4"><h1>⏳ 実行</h1><div><v-btn color="warning" @click="autoSchedule">⚡ 自動配置</v-btn><v-btn color="primary" class="ml-2" @click="openCreation('task')">新規</v-btn></div></div>
+          <v-row v-for="(cfg, id) in TIME_SLOTS" :key="id" class="mb-4" no-gutters>
+            <v-col cols="2" class="pa-2"><div>{{id}}</div><div class="text-caption">{{cfg.range}}</div></v-col>
+            <v-col cols="5" class="pa-2 border-left"><div class="text-overline">PLAN</div><task-card v-for="t in state.tasks.filter(x=>x.slot===id && x.is_planned)" :key="t.id" :task="t" :projects="state.projects" @edit="openCreation('task', t)" @toggle="toggleComplete"></task-card></v-col>
+            <v-col cols="5" class="pa-2 border-left"><div class="text-overline">ACTUAL</div><task-card v-for="t in state.tasks.filter(x=>x.slot===id && x.is_actual)" :key="t.id" :task="t" :projects="state.projects" @edit="openCreation('task', t)" @toggle="toggleComplete"></task-card></v-col>
+          </v-row>
+        </div>
+      </div>
+    </v-container>
 
-  public selectProject(id: string) {
-    const current = this.state.projects.find(p => p.id === this.state.selectedProjectId);
-    if (current) current.markdown = (document.getElementById('mm-textarea') as HTMLTextAreaElement).value;
-    this.state.selectedProjectId = id;
-    const next = this.state.projects.find(p => p.id === id);
-    if (next) (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = next.markdown;
-    ASMOSStorage.saveState(this.state);
-    this.renderProjects();
-    this.updateMindMap('goal');
-  }
+    <v-container fluid v-if="activeTab === 'review'" class="pa-6">
+      <v-row><v-col cols="12" md="8" class="mx-auto">
+        <v-card class="pa-6 mb-6">
+          <div class="text-h6 mb-4">📊 Fact Analysis</div>
+          <div class="text-h5">Actual: {{ state.tasks.filter(t=>t.is_actual).reduce((s,t)=>s+t.cost.actual_time,0) }}m / Plan (adj): {{ state.tasks.filter(t=>t.is_actual).reduce((s,t)=>s+BiasEngine.adjustTime(t.cost.estimated_time),0) }}m</div>
+        </v-card>
+        <v-textarea label="Good" v-model="state.memoGood" variant="outlined" class="mb-4"></v-textarea>
+        <v-textarea label="Improvement" v-model="state.memoImprove" variant="outlined" class="mb-4"></v-textarea>
+        <v-textarea label="Tomorrow's Actions" v-model="state.memoNextActions" variant="outlined" class="mb-4"></v-textarea>
+      </v-col></v-row>
+    </v-container>
+  </v-main>
 
-  private initDragAndDrop() {
-    document.addEventListener('dragstart', (e) => { const target = e.target as HTMLElement; if (target.classList.contains('task-card')) { e.dataTransfer?.setData('text/plain', target.id.replace('task-', '')); target.style.opacity = '0.5'; } });
-    document.addEventListener('dragend', (e) => { (e.target as HTMLElement).style.opacity = '1'; document.querySelectorAll('.slot-column').forEach(el => el.classList.remove('drag-over')); });
-    document.addEventListener('dragenter', (e) => { const target = (e.target as HTMLElement).closest('.slot-column'); if (target) target.classList.add('drag-over'); });
-    document.addEventListener('dragleave', (e) => { const target = (e.target as HTMLElement).closest('.slot-column'); if (target) target.classList.remove('drag-over'); });
-    document.addEventListener('drop', (e) => { e.preventDefault(); const target = (e.target as HTMLElement).closest('.slot-column') as HTMLElement; const taskId = e.dataTransfer?.getData('text/plain'); if (target && taskId) { const slotId = target.getAttribute('data-slot') as TimeSlotID; const col = target.getAttribute('data-column') as any; this.handleTaskDrop(taskId, slotId, col); } });
-  }
+  <v-dialog v-model="creationModal" max-width="600"><v-card class="pa-4">
+    <v-text-field v-if="creationMode==='task'" label="Title" v-model="formTask.title"></v-text-field>
+    <v-textarea v-if="creationMode==='task'" label="DoD (Required)" v-model="formTask.dod"></v-textarea>
+    <v-text-field v-if="creationMode==='ifthen'" label="If" v-model="formIfThen.condition"></v-text-field>
+    <v-text-field v-if="creationMode==='ifthen'" label="Then" v-model="formIfThen.action"></v-text-field>
+    <v-card-actions><v-btn color="error" @click="deleteEntry">Delete</v-btn><v-spacer></v-spacer><v-btn color="primary" @click="submitCreation">Save</v-btn></v-card-actions>
+  </v-card></v-dialog>
 
-  private handleTaskDrop(taskId: string, slotId: TimeSlotID, column: 'plan' | 'actual' | 'stock') {
-    const task = this.state.tasks.find(t => t.id === taskId); if (!task) return;
-    const wasActual = task.is_actual; task.slot = slotId;
-    if (column === 'stock') { task.is_planned = false; task.is_actual = false; task.cost.actual_time = 0; }
-    else if (column === 'actual' && !wasActual) { this.currentTaskIdForModal = taskId; this.openCompletionModal(task); return; }
-    else if (column === 'plan') { task.is_actual = false; task.cost.actual_time = 0; task.is_planned = true; }
-    ASMOSStorage.saveState(this.state); this.render();
-  }
+  <v-dialog v-model="completionModal" max-width="400"><v-card class="pa-4 text-center">
+    <v-btn-toggle v-model="formComplete.mood" mandatory color="primary" class="mb-4 d-flex justify-center">
+      <v-btn :value="-100">😫</v-btn><v-btn :value="-50">😩</v-btn><v-btn :value="0">😐</v-btn><v-btn :value="50">😊</v-btn><v-btn :value="100">🤩</v-btn>
+    </v-btn-toggle>
+    <v-text-field label="Actual Time" v-model.number="formComplete.actual_time" type="number"></v-text-field>
+    <v-btn block color="success" @click="submitCompletion">Finish</v-btn>
+  </v-card></v-dialog>
 
-  private calculateUrgency(deadline?: string): { score: number, label: string } {
-    if (!deadline) return { score: 0, label: '' };
-    const now = new Date(); const [h, m] = deadline.split(':').map(Number);
-    const deadDate = new Date(); deadDate.setHours(h, m, 0); const diffMin = (deadDate.getTime() - now.getTime()) / 60000;
-    if (diffMin < 0) return { score: 100, label: 'OVER' };
-    if (diffMin > 180) return { score: 10, label: '' };
-    return { score: Math.floor(100 - (diffMin / 180) * 100), label: diffMin < 30 ? 'SOON' : '' };
-  }
+  <v-dialog v-model="projectModal" max-width="400"><v-card class="pa-4">
+    <div class="text-h6 mb-4">{{ editingProjectId ? 'プロジェクト設定' : '新規プロジェクト' }}</div>
+    <v-text-field label="プロジェクト名" v-model="formProject.title" @keyup.enter="submitProject" class="mb-2"></v-text-field>
+    <v-text-field label="締め切り日" v-model="formProject.deadline" type="date" class="mb-2"></v-text-field>
+    <v-select label="ステータス" :items="[{title:'進行中', value:'active'}, {title:'達成', value:'achieved'}, {title:'凍結', value:'shelved'}]" v-model="formProject.status"></v-select>
+    <v-card-actions><v-spacer></v-spacer><v-btn @click="projectModal = false">キャンセル</v-btn><v-btn color="primary" @click="submitProject">保存</v-btn></v-card-actions>
+  </v-card></v-dialog>
+</v-app>
+`
+};
 
-  private getImportanceValue(imp: Importance): number { return imp === 'High' ? 3 : (imp === 'Mid' ? 2 : 1); }
-  private getTaskScore(task: TaskEntity): number { return this.getImportanceValue(task.importance) * this.calculateUrgency(task.deadline).score; }
-
-  private getAdjustedTime(minutes: number): number { return Math.ceil(minutes * 1.5); }
-
-  private autoScheduleTasks() {
-    const unassignedTasks = this.state.tasks.filter(t => t.slot === 'STOCK_DAY' && !t.is_actual);
-    if (unassignedTasks.length === 0) return;
-    unassignedTasks.sort((a, b) => {
-      if (a.goal_label !== b.goal_label) return (a.goal_label || '').localeCompare(b.goal_label || '');
-      return this.getTaskScore(b) - this.getTaskScore(a);
-    });
-    const slotCapacities: Record<string, number> = {};
-    Object.keys(TIME_SLOTS).forEach(slotId => {
-      const cfg = TIME_SLOTS[slotId];
-      const totalCap = (cfg.endHour - cfg.startHour) * 60;
-      const usableCap = totalCap * 0.8;
-      const currentUsage = this.state.tasks.filter(t => t.slot === slotId && t.is_planned).reduce((sum, t) => sum + this.getAdjustedTime(t.cost.estimated_time), 0);
-      slotCapacities[slotId] = usableCap - currentUsage;
-    });
-    const GLOBAL_LIMIT = 480; 
-    let currentTotalPlanned = this.state.tasks.filter(t => t.is_planned && !t.slot.startsWith('STOCK')).reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
-    let allocationCount = 0;
-    for (const task of unassignedTasks) {
-      const adjustedTime = this.getAdjustedTime(task.cost.estimated_time);
-      if (currentTotalPlanned + adjustedTime > GLOBAL_LIMIT) continue;
-      for (const slotId of Object.keys(TIME_SLOTS)) {
-        if (slotCapacities[slotId] >= adjustedTime) {
-          task.slot = slotId as TimeSlotID;
-          task.is_planned = true;
-          slotCapacities[slotId] -= adjustedTime;
-          currentTotalPlanned += adjustedTime;
-          allocationCount++;
-          break; 
-        }
-      }
-    }
-    if (allocationCount > 0) { ASMOSStorage.saveState(this.state); this.render(); alert(`⚡ ${allocationCount}件を最適配置。`); }
-    else { alert('⚠️ 配置可能な枠がありません。'); }
-  }
-
-  private render() {
-    this.renderDashboard();
-    this.renderTimezone();
-    this.renderProjects(); // Render project list in sidebar
-    this.renderIfthen();
-    this.renderReflectionFact();
-    this.updateTimeIndicator();
-  }
-
-  private renderDashboard() {
-    const plannedTasks = this.state.tasks.filter(t => t.is_planned);
-    const actualTasks = this.state.tasks.filter(t => t.is_actual);
-    const lastMood = this.state.moodHistory[this.state.moodHistory.length - 1];
-    const hpStatus = document.getElementById('current-mood-status');
-    if (hpStatus) hpStatus.innerText = `Status: ${lastMood?.emoji || '🤩'}`;
-    const dashHP = document.getElementById('dash-hp-value');
-    if (dashHP) dashHP.innerText = (lastMood?.value || 100).toString();
-    document.getElementById('dash-planned-time')!.innerText = `${plannedTasks.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0)} min`;
-    document.getElementById('dash-actual-time')!.innerText = `${actualTasks.reduce((s, t) => s + t.cost.actual_time, 0)} min`;
-    document.getElementById('dash-remaining-tasks')!.innerText = plannedTasks.filter(t => !t.is_actual).length.toString();
-    this.drawMoodChart('mood-chart-dash', this.state.moodHistory);
-  }
-
-  private renderTimezone() {
-    const now = new Date();
-    const currentHour = now.getHours() + now.getMinutes() / 60;
-    ['STOCK_MONTH', 'STOCK_WEEK', 'STOCK_DAY'].forEach(lvl => {
-      const col = document.getElementById(`tasks-stock-${lvl.split('_')[1].toLowerCase()}`);
-      if (col) {
-        let tasks = this.state.tasks.filter(t => t.slot === lvl);
-        if (lvl === 'STOCK_DAY') tasks.sort((a, b) => this.getTaskScore(b) - this.getTaskScore(a));
-        col.innerHTML = tasks.map(t => this.createTaskCardHTML(t, 'stock')).join('');
-      }
-    });
-    Object.keys(TIME_SLOTS).forEach(slotId => {
-      const pCol = document.getElementById(`tasks-plan-${slotId}`); 
-      const aCol = document.getElementById(`tasks-actual-${slotId}`); 
-      const el = document.getElementById(`slot-${slotId}`);
-      if (pCol && aCol && el) {
-        const cfg = TIME_SLOTS[slotId];
-        const totalCap = (cfg.endHour - cfg.startHour) * 60;
-        const usableCap = Math.floor(totalCap * 0.8);
-        const tasks = this.state.tasks.filter(t => t.slot === slotId); 
-        const plTasks = tasks.filter(t => t.is_planned);
-        const totalAdjustedUsage = plTasks.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
-        const overUsable = totalAdjustedUsage > usableCap;
-        const isOverdue = currentHour > cfg.endHour;
-        const head = el.querySelector('.slot-header'); 
-        if (head) { 
-          const old = head.querySelector('.slot-time-usage'); if (old) old.remove(); 
-          head.insertAdjacentHTML('beforeend', `<div class="slot-time-usage ${overUsable ? 'error' : ''}">${totalAdjustedUsage}/${usableCap}m (adj) ${overUsable ? `<span class="over-label">⚠️ NO SLACK</span>` : ''}<div style="font-size: 0.6rem; opacity: 0.6; margin-top: 2px;">Slack Reserved: ${totalCap - usableCap}m</div></div>`); 
-        }
-        el.classList.toggle('over-capacity', overUsable);
-        const hasUnfinished = plTasks.some(t => !t.is_actual);
-        el.style.backgroundColor = (isOverdue && hasUnfinished) ? 'rgba(218, 54, 51, 0.08)' : '';
-        pCol.innerHTML = `<button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'plan')">+</button>` + plTasks.map(t => this.createTaskCardHTML(t, 'plan')).join('');
-        aCol.innerHTML = `<button class="add-inline-btn" onclick="window.app.handleAddTaskInline('${slotId}', 'actual')">+</button>` + tasks.filter(t => t.is_actual).map(t => this.createTaskCardHTML(t, 'actual')).join('');
-      }
-    });
-  }
-
-  private renderIfthen() {
-    const listContainer = document.getElementById('ifthen-list'); if (!listContainer) return;
-    if (this.state.ifThenPlans.length === 0) { listContainer.innerHTML = '<div class="hint" style="text-align: center; padding: 40px;">まだプランがありません</div>'; return; }
-    const categories = [{ id: 'Habit', name: '🏃 習慣' }, { id: 'Risk', name: '🛡️ リスク回避' }, { id: 'Work', name: '💼 業務' }];
-    listContainer.innerHTML = categories.map(cat => {
-      const plans = this.state.ifThenPlans.filter(p => p.category === cat.id); if (plans.length === 0) return '';
-      return `<section class="ifthen-genre-section"><h3 class="genre-title">${cat.name}</h3><div class="ifthen-grid">${plans.map(p => `<div class="ifthen-card standard-panel" onclick="window.app.handleEditIfThenPlan('${p.id}')"><div class="ifthen-logic"><div class="condition"><strong>If:</strong> ${p.condition}</div><div class="arrow">➔</div><div class="action"><strong>Then:</strong> ${p.action}</div></div></div>`).join('')}</div></section>`;
-    }).join('');
-  }
-
-  private renderReflectionFact() {
-    const fact = document.getElementById('fact-summary');
-    const logs = document.getElementById('fact-task-logs');
-    if (fact) {
-      const acts = this.state.tasks.filter(t => t.is_actual);
-      const totalPlanned = acts.reduce((s, t) => s + this.getAdjustedTime(t.cost.estimated_time), 0);
-      const totalActual = acts.reduce((s, t) => s + t.cost.actual_time, 0);
-      const totalDiff = totalActual - totalPlanned;
-      fact.innerHTML = `<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;"><div><strong>実行タスク：</strong> ${acts.length}</div><div><strong>予定時間 (adj)：</strong> ${totalPlanned}m<br><strong>実測時間：</strong> ${totalActual}m <span style="color: ${totalDiff > 0 ? 'var(--danger-color)' : 'var(--success-color)'}; font-weight: bold;">(${totalDiff > 0 ? '+' : ''}${totalDiff}m)</span></div></div>`;
-      if (logs) logs.innerHTML = acts.length === 0 ? '<div class="hint">なし</div>' : acts.map(t => {
-        const p = this.getAdjustedTime(t.cost.estimated_time); const a = t.cost.actual_time; const d = a - p;
-        return `<div class="task-log-item" style="margin-bottom: 15px; border-left: 3px solid var(--accent-color); padding-left: 15px;"><div style="display: flex; justify-content: space-between; align-items: baseline;"><div style="font-weight: 600; font-size: 0.95rem;">${t.title}</div><div style="font-size: 0.8rem; font-family: monospace;">${p}m (adj) ➔ ${a}m <strong style="color: ${d > 0 ? 'var(--danger-color)' : (d < 0 ? 'var(--success-color)' : 'var(--text-secondary)')};">(${d > 0 ? '+' : ''}${d}m)</strong></div></div><div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 4px;">${t.note || '(なし)'}</div></div>`;
-      }).join('');
-      this.drawMoodChart('mood-chart-review', this.state.moodHistory);
-    }
-  }
-
-  private createTaskCardHTML(t: TaskEntity, type: string): string {
-    const isBoth = t.is_planned && t.is_actual; const isUn = !t.is_planned && t.is_actual;
-    const urg = this.calculateUrgency(t.deadline); const score = this.getTaskScore(t);
-    let mod = isBoth ? 'success' : (isUn ? 'unplanned' : ''); if (t.is_recovery) mod += ' recovery';
-    const project = this.state.projects.find(p => p.id === t.goal_label);
-    const projLabel = project ? project.title : '';
-    return `<div class="task-card ${mod}" id="task-${t.id}" draggable="true" onclick="window.app.handleEditTask('${t.id}')"><div class="card-badges">${t.importance === 'High' ? '<span class="badge high">高</span>' : ''}${projLabel ? `<span class="badge goal">${projLabel}</span>` : ''}${score > 0 && t.slot === 'STOCK_DAY' ? `<span class="badge score">pts: ${score}</span>` : ''}${urg.score > 70 ? '<span class="badge urgency">🔥</span>' : ''}</div><div class="task-title">${t.title}</div><div class="task-meta"><span class="duration">⏱️ ${t.cost.estimated_time}m</span><button onclick="event.stopPropagation(); window.app.toggleTask('${t.id}')" class="btn subtle">${t.is_actual ? '戻す' : '完了'}</button></div></div>`;
-  }
-
-  public handleAddTaskInline(slot: TimeSlotID, column: 'plan' | 'actual' | 'stock') { this.currentTargetSlot = slot; this.currentTargetColumn = column; this.creationMode = 'task'; this.openCreationModal(); (document.getElementById('task-slot') as HTMLSelectElement).value = slot; }
-  public handleEditTask(id: string) { const t = this.state.tasks.find(x => x.id === id); if (t) { this.editingTaskId = id; this.creationMode = 'task'; this.openCreationModal(t); } }
-  public handleEditIfThenPlan(id: string) { const p = this.state.ifThenPlans.find(x => x.id === id); if (p) { this.editingIfThenId = id; this.creationMode = 'ifthen'; this.openCreationModal(p); } }
-  public handleAddIfThen() { this.editingIfThenId = null; this.creationMode = 'ifthen'; this.openCreationModal(); }
-  private handleDeleteEntry() {
-    if (this.creationMode === 'task' && this.editingTaskId) { if (confirm('削除しますか？')) { this.state.tasks = this.state.tasks.filter(t => t.id !== this.editingTaskId); ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal'); } }
-    else if (this.creationMode === 'ifthen' && this.editingIfThenId) { if (confirm('削除しますか？')) { this.state.ifThenPlans = this.state.ifThenPlans.filter(p => p.id !== this.editingIfThenId); ASMOSStorage.saveState(this.state); this.renderIfthen(); this.closeModal('creation-modal'); } }
-  }
-  private handleAddTask() { this.editingTaskId = null; this.creationMode = 'task'; this.openCreationModal(); }
-  private openCreationModal(entity?: any) {
-    const modal = document.getElementById('creation-modal'); if (!modal) return; modal.style.display = 'flex'; this.switchCreationTab(this.creationMode);
-    const delBtn = document.getElementById('creation-delete'); const subBtn = document.getElementById('creation-submit');
-    if (this.creationMode === 'task') {
-      const projSelect = document.getElementById('task-project-id') as HTMLSelectElement;
-      if (projSelect) {
-        projSelect.innerHTML = '<option value="">(なし)</option>' + this.state.projects.map(p => `<option value="${p.id}">${p.title}</option>`).join('');
-      }
-
-      if (delBtn) delBtn.style.display = entity ? 'block' : 'none'; if (subBtn) subBtn.innerText = entity ? '更新' : '保存';
-      (document.getElementById('task-title') as HTMLInputElement).value = entity ? entity.title : '';
-      (document.getElementById('task-slot') as HTMLSelectElement).value = entity ? entity.slot : this.currentTargetSlot;
-      (document.getElementById('task-importance') as HTMLSelectElement).value = entity ? entity.importance : 'Mid';
-      (document.getElementById('task-project-id') as HTMLSelectElement).value = entity ? (entity.goal_label || '') : '';
-      (document.getElementById('task-deadline') as HTMLInputElement).value = entity ? (entity.deadline || '') : '';
-      (document.getElementById('task-estimated') as HTMLInputElement).value = entity ? entity.cost.estimated_time.toString() : '60';
-      (document.getElementById('task-mode') as HTMLSelectElement).value = entity ? (entity.is_recovery ? 'recovery' : 'normal') : 'normal';
-      (document.getElementById('task-dod') as HTMLTextAreaElement).value = entity ? entity.quality.dod : '';
-    } else {
-      if (delBtn) delBtn.style.display = entity ? 'block' : 'none'; if (subBtn) subBtn.innerText = entity ? '更新' : '保存';
-      (document.getElementById('ifthen-condition') as HTMLInputElement).value = entity ? entity.condition : '';
-      (document.getElementById('ifthen-action') as HTMLInputElement).value = entity ? entity.action : '';
-      (document.getElementById('ifthen-category') as HTMLSelectElement).value = entity ? entity.category : 'Habit';
-    }
-  }
-  private switchCreationTab(tab: 'task' | 'ifthen') { this.creationMode = tab; document.getElementById('tab-task')?.classList.toggle('active', tab === 'task'); document.getElementById('tab-ifthen')?.classList.toggle('active', tab === 'ifthen'); document.getElementById('form-task')!.style.display = tab === 'task' ? 'block' : 'none'; document.getElementById('form-ifthen')!.style.display = tab === 'ifthen' ? 'block' : 'none'; }
-  private handleCreationSubmit() {
-    if (this.creationMode === 'task') {
-      const title = (document.getElementById('task-title') as HTMLInputElement).value; if (!title) return;
-      const dod = (document.getElementById('task-dod') as HTMLTextAreaElement).value.trim(); if (!dod) return alert('❌ DoDは必須です');
-      const data = { title, slot: (document.getElementById('task-slot') as HTMLSelectElement).value as TimeSlotID, importance: (document.getElementById('task-importance') as HTMLSelectElement).value as any, deadline: (document.getElementById('task-deadline') as HTMLInputElement).value, goal_label: (document.getElementById('task-project-id') as HTMLSelectElement).value, is_recovery: (document.getElementById('task-mode') as HTMLSelectElement).value === 'recovery', est: parseInt((document.getElementById('task-estimated') as HTMLInputElement).value), dod };
-      if (this.editingTaskId) { const t = this.state.tasks.find(x => x.id === this.editingTaskId); if (t) { t.title = data.title; t.slot = data.slot; t.importance = data.importance; t.deadline = data.deadline; t.goal_label = data.goal_label; t.is_recovery = data.is_recovery; t.cost.estimated_time = data.est; t.quality.dod = data.dod; } }
-      else { this.state.tasks.push({ id: crypto.randomUUID(), scope_id: 'WBS-001', title: data.title, slot: data.slot, cost: { estimated_time: data.est, actual_time: 0 }, quality: { dod: data.dod, success_criteria: '', actual_quality: 0 }, risk: { potential_issue: '', mitigation: '', is_manifested: false }, is_planned: !data.slot.startsWith('STOCK'), is_actual: false, importance: data.importance, deadline: data.deadline, goal_label: data.goal_label, is_recovery: data.is_recovery }); }
-    } else {
-      const cond = (document.getElementById('ifthen-condition') as HTMLInputElement).value; const act = (document.getElementById('ifthen-action') as HTMLInputElement).value; const cat = (document.getElementById('ifthen-category') as HTMLSelectElement).value; if (!cond || !act) return;
-      if (this.editingIfThenId) { const p = this.state.ifThenPlans.find(x => x.id === this.editingIfThenId); if (p) { p.condition = cond; p.action = act; p.category = cat; } }
-      else { this.state.ifThenPlans.push({ id: crypto.randomUUID(), condition: cond, action: act, category: cat }); }
-    }
-    ASMOSStorage.saveState(this.state); this.render(); this.closeModal('creation-modal');
-  }
-  private switchView(view: string) { document.querySelectorAll('.app-view').forEach(el => (el as HTMLElement).style.display = 'none'); document.getElementById(`${view}-view`)!.style.display = 'flex'; document.querySelectorAll('.main-nav button').forEach(btn => btn.classList.remove('active')); document.getElementById(`nav-${view}`)?.classList.add('active'); if (view === 'mindmap') this.initMindMap('goal'); if (view === 'reflection') this.initMindMap('analysis'); if (view === 'ifthen') this.renderIfthen(); }
-  private initNavigation() { ['dashboard', 'mindmap', 'ifthen', 'timezone', 'reflection'].forEach(v => document.getElementById(`nav-${v}`)?.addEventListener('click', () => this.switchView(v))); }
-  private initMindMap(type: 'goal' | 'analysis') { const sel = type === 'goal' ? '#markmap-svg-goal' : '#markmap-svg-analysis'; const key = type === 'goal' ? 'mmGoal' : 'mmAnalysis'; if ((this as any)[key]) { this.updateMindMap(type); return; } (this as any)[key] = (window as any).markmap.Markmap.create(sel, { paddingX: 32 }); this.updateMindMap(type); }
-  private updateMindMap(type: 'goal' | 'analysis') {
-    const inst = type === 'goal' ? this.mmGoal : this.mmAnalysis; if (!inst) return;
-    let md = '';
-    if (type === 'goal') {
-      const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
-      md = proj ? proj.markdown : '# Select a project';
-      (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = md;
-    } else {
-      md = this.state.memoAnalysisMarkdown;
-    }
-    const { root } = new (window as any).markmap.Transformer().transform(md); inst.setData(root); setTimeout(() => inst.fit(), 50); }
-  private setupRatingButtons(gid: string) { const g = document.getElementById(gid); g?.querySelectorAll('button').forEach(b => b.addEventListener('click', () => { g.querySelectorAll('button').forEach(x => x.classList.remove('selected')); b.classList.add('selected'); })); }
-  private closeModal(id: string) { document.getElementById(id)!.style.display = 'none'; }
-  private downloadMindMap() {
-    const proj = this.state.projects.find(p => p.id === this.state.selectedProjectId);
-    if (!proj) return;
-    const b = new Blob([proj.markdown], { type: 'text/markdown' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(b);
-    a.download = `asmos_goal_${proj.title}.md`;
-    a.click();
-  }
-  private handleMindMapUpload(e: Event) { const f = (e.target as HTMLInputElement).files?.[0]; if (f) { const r = new FileReader(); r.onload = (ev) => { this.state.mindMapMarkdown = ev.target?.result as string; (document.getElementById('mm-textarea') as HTMLTextAreaElement).value = this.state.mindMapMarkdown; ASMOSStorage.saveState(this.state); this.updateMindMap('goal'); }; r.readAsText(f); } }
-  private updateTimeIndicator() { const ind = document.getElementById('time-indicator'); if (!ind) return; const now = new Date(); const current = now.getHours() + now.getMinutes() / 60; if (current < 5 || current > 22) { ind.style.display = 'none'; return; } ind.style.display = 'block'; let target = ''; for (const id in TIME_SLOTS) if (current >= TIME_SLOTS[id].startHour && current < TIME_SLOTS[id].endHour) { target = id; break; } if (target) { const el = document.getElementById(`slot-${target}`); if (el) { const cfg = TIME_SLOTS[target]; const pct = (current - cfg.startHour) / (cfg.endHour - cfg.startHour); ind.style.top = `${el.offsetTop + (el.offsetHeight * pct)}px`; } } }
-  private openCompletionModal(task: TaskEntity) { const modal = document.getElementById('completion-modal'); if (!modal) return; modal.style.display = 'flex'; (document.getElementById('completion-actual-time') as HTMLInputElement).value = this.getAdjustedTime(task.cost.estimated_time).toString(); }
-  private handleModalSubmit() {
-    if (!this.currentTaskIdForModal) return;
-    const moodBtn = document.getElementById('mood-rating')?.querySelector('button.selected');
-    const moodVal = moodBtn?.getAttribute('data-value');
-    const emoji = (moodBtn as HTMLElement)?.innerText || '😐';
-    if (!moodVal) return alert('気分を選択してください');
-    const actualTime = parseInt((document.getElementById('completion-actual-time') as HTMLInputElement).value);
-    if (isNaN(actualTime)) return alert('実績時間を入力してください');
-    const t = this.state.tasks.find(x => x.id === this.currentTaskIdForModal);
-    if (t) {
-      t.cost.actual_time = actualTime; t.is_actual = true;
-      this.state.moodHistory.push({ timestamp: new Date().toISOString(), value: parseInt(moodVal), emoji });
-      ASMOSStorage.saveState(this.state); this.closeModal('completion-modal'); this.render();
-    }
-  }
-  private drawMoodChart(containerId: string, data: MoodRecord[]) {
-    const container = document.getElementById(containerId); if (!container || data.length === 0) return; container.innerHTML = '';
-    const width = container.clientWidth; const height = container.clientHeight; const margin = { top: 30, right: 30, bottom: 30, left: 40 };
-    const svg = d3.select(`#${containerId}`).append('svg').attr('width', width).attr('height', height).append('g').attr('transform', `translate(${margin.left},${margin.top})`);
-    const x = d3.scaleTime().domain(d3.extent(data, (d: MoodRecord) => new Date(d.timestamp)) as [Date, Date]).range([0, width - margin.left - margin.right]);
-    const y = d3.scaleLinear().domain([-100, 100]).range([height - margin.top - margin.bottom, 0]);
-    svg.append('g').attr('class', 'grid').attr('opacity', 0.05).call(d3.axisLeft(y).ticks(5).tickSize(-(width - margin.left - margin.right)).tickFormat(() => ""));
-
-    // Neutral line at 0
-    svg.append('line')
-      .attr('x1', 0)
-      .attr('x2', width - margin.left - margin.right)
-      .attr('y1', y(0))
-      .attr('y2', y(0))
-      .attr('stroke', 'var(--text-secondary)')
-      .attr('stroke-width', 1)
-      .attr('stroke-dasharray', '4,4')
-      .attr('opacity', 0.3);
-    const line = d3.line().x((d: MoodRecord) => x(new Date(d.timestamp))).y((d: MoodRecord) => y(d.value)).curve(d3.curveMonotoneX);
-    svg.append('path').datum(data).attr('fill', 'none').attr('stroke', 'var(--accent-color)').attr('stroke-width', 2).attr('d', line);
-    const dots = svg.selectAll('.dot').data(data).enter().append('g').attr('transform', (d: MoodRecord) => `translate(${x(new Date(d.timestamp))},${y(d.value)})`);
-    dots.append('circle').attr('r', 4).attr('fill', 'var(--bg-color)').attr('stroke', 'var(--accent-color)').attr('stroke-width', 2);
-    dots.append('text').text((d: MoodRecord) => d.emoji).attr('y', -12).attr('text-anchor', 'middle').style('font-size', '12px');
-    svg.append('g').attr('transform', `translate(0,${height - margin.top - margin.bottom})`).call(d3.axisBottom(x).ticks(5).tickFormat(d3.timeFormat('%H:%M') as any)).style('color', 'var(--text-secondary)');
-    svg.append('g').call(d3.axisLeft(y).ticks(5)).style('color', 'var(--text-secondary)');
-  }
-  private downloadDailyReview() { const d = new Date().toISOString().split('T')[0]; const fact = document.getElementById('fact-summary')?.innerText || ''; const c = `# Reflection - ${d}\n\n## Fact\n${fact}\n\n## Interpretation\n### Good\n${this.state.memoGood}\n### Improvement\n${this.state.memoImprove}\n### Logic Tree\n${this.state.memoAnalysisMarkdown}\n### Insight\n${this.state.memoInsight}\n\n## Judgment\n${this.state.memoNextActions}`; const b = new Blob([c], { type: 'text/markdown' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `reflection_${d}.md`; a.click(); }
-  public toggleTask(id: string) { const t = this.state.tasks.find(x => x.id === id); if (t) { if (t.is_actual) { t.is_actual = false; t.cost.actual_time = 0; ASMOSStorage.saveState(this.state); this.render(); } else { this.currentTaskIdForModal = id; this.openCompletionModal(t); } } }
-}
-const app = new ASMOSApp();
-(window as any).app = app;
+const appInstance = createApp(RootComponent);
+appInstance.use(vuetify);
+appInstance.component('task-card', {
+  props: ['task', 'projects'],
+  template: `
+    <v-card class="task-card-item mb-2" :class="{ success: task.is_actual, recovery: task.is_recovery }" @click="$emit('edit', task)">
+      <v-card-text class="pa-2">
+        <div class="d-flex justify-space-between align-center">
+          <span class="text-subtitle-2 font-weight-bold">{{ task.title }}</span>
+          <v-chip size="x-small" color="primary" variant="outlined">{{ projects.find((p:any) => p.id === task.project_id)?.title || 'No Project' }}</v-chip>
+        </div>
+        <div class="d-flex justify-space-between mt-1 align-center">
+          <span class="text-caption text-secondary">⏱️ {{ task.cost.estimated_time }}m</span>
+          <v-btn size="x-small" :color="task.is_actual ? 'secondary' : 'success'" variant="flat" @click.stop="$emit('toggle', task)">{{ task.is_actual ? '戻す' : '完了' }}</v-btn>
+        </div>
+      </v-card-text>
+    </v-card>
+  `
+});
+appInstance.mount('#app');

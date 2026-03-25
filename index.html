@@ -4,22 +4,20 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ASMOS - Autonomous Self-Management OS</title>
+    <!-- Vuetify 3 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/vuetify@3.5.8/dist/vuetify.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/css/materialdesignicons.min.css" rel="stylesheet">
     <link rel="stylesheet" href="src/style.css">
-    <!-- Markmap CDN -->
-    <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
-    <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.16.0"></script>
-    <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.16.0"></script>
+    
+    <!-- Vue 3 Global Build -->
+    <script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.prod.js"></script>
+    <!-- Vuetify 3 JS -->
+    <script src="https://cdn.jsdelivr.net/npm/vuetify@3.5.8/dist/vuetify.min.js"></script>
+    <!-- mo.js for Animations -->
+    <script src="https://cdn.jsdelivr.net/npm/@mojs/core"></script>
 </head>
 <body>
-    <nav class="main-nav">
-        <button id="nav-dashboard" class="active">📊 統合ダッシュボード</button>
-        <button id="nav-mindmap">🎯 目的管理</button>
-        <button id="nav-ifthen">💡 if-thenプランニング</button>
-        <button id="nav-timezone">⏳ 実行</button>
-        <button id="nav-reflection">🧠 内省とアクション</button>
-    </nav>
     <div id="app"></div>
-    <!-- The compiled script will be here -->
     <script src="dist/main.js"></script>
 </body>
 </html>
